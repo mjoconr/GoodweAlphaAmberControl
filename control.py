@@ -139,6 +139,10 @@ GOODWE_UNIT = _env_int("GOODWE_UNIT", _env_int("UNIT", 247))
 MODBUS_TIMEOUT_SEC = _env_float("MODBUS_TIMEOUT_SEC", _env_float("TIMEOUT", 3.0))
 MODBUS_RETRIES = _env_int("MODBUS_RETRIES", _env_int("RETRIES", 3))
 
+MODBUS_RECONNECT_ON_ERROR = _env_bool("MODBUS_RECONNECT_ON_ERROR", True)
+MODBUS_RECONNECT_MIN_BACKOFF_SEC = _env_float("MODBUS_RECONNECT_MIN_BACKOFF_SEC", 1.0)
+MODBUS_RECONNECT_MAX_BACKOFF_SEC = _env_float("MODBUS_RECONNECT_MAX_BACKOFF_SEC", 30.0)
+
 GOODWE_EXPORT_LIMIT_MODE = _env("GOODWE_EXPORT_LIMIT_MODE", "pct")  # pct or active_pct
 GOODWE_EXPORT_SWITCH_REG = _env_int("GOODWE_EXPORT_SWITCH_REG", 291)
 GOODWE_EXPORT_PCT_REG = _env_int("GOODWE_EXPORT_PCT_REG", 292)
@@ -510,18 +514,53 @@ def _split_host_port(host: str) -> Tuple[str, int]:
 
 
 class GoodWeModbus:
-    def __init__(self, host: str, unit: int, timeout_sec: float = 3.0, retries: int = 3):
+    def __init__(
+        self,
+        host: str,
+        unit: int,
+        timeout_sec: float = 3.0,
+        retries: int = 3,
+        reconnect_on_error: bool = True,
+        reconnect_min_backoff_sec: float = 1.0,
+        reconnect_max_backoff_sec: float = 30.0,
+    ):
         self.host, self.port = _split_host_port(host)
         self.unit = int(unit)
         self.timeout_sec = float(timeout_sec)
         self.retries = int(retries)
+
+        self.reconnect_on_error = bool(reconnect_on_error)
+        self.reconnect_min_backoff_sec = float(reconnect_min_backoff_sec)
+        self.reconnect_max_backoff_sec = float(reconnect_max_backoff_sec)
+
         self.client = None
+
+        # Reconnect state (exponential backoff)
+        self._reconnect_failures = 0
+        self._next_reconnect_ts = 0.0
 
     def connect(self) -> bool:
         if ModbusTcpClient is None:
             raise RuntimeError("pymodbus not available")
+
+        # Always create a fresh socket on connect/reconnect.
+        self.close()
         self.client = ModbusTcpClient(host=self.host, port=self.port, timeout=self.timeout_sec)
-        return bool(self.client.connect())
+
+        try:
+            ok = bool(self.client.connect())
+        except Exception:
+            ok = False
+
+        if ok:
+            # Reset backoff on success
+            self._reconnect_failures = 0
+            self._next_reconnect_ts = 0.0
+            return True
+
+        # Failed to connect; drop the client so later calls can retry cleanly.
+        self.close()
+        return False
 
     def close(self) -> None:
         if self.client:
@@ -531,9 +570,78 @@ class GoodWeModbus:
                 pass
         self.client = None
 
+    @staticmethod
+    def _is_connection_error(exc: BaseException) -> bool:
+        """Best-effort detection of socket/transport failures (Broken pipe, reset, timeout, etc.)."""
+        try:
+            msg = str(exc).lower()
+        except Exception:
+            msg = ""
+
+        # Don't treat our compatibility errors as connection errors.
+        if "signature mismatch" in msg:
+            return False
+
+        # Common built-in connection errors
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+            return True
+
+        # OS-level errors often include errno
+        if isinstance(exc, OSError):
+            eno = getattr(exc, "errno", None)
+            if eno in (32, 54, 57, 58, 60, 61, 64, 65, 101, 104, 110, 111, 112, 113):
+                return True
+
+        # Fallback string checks
+        for needle in (
+            "broken pipe",
+            "connection reset",
+            "connection aborted",
+            "connection refused",
+            "timed out",
+            "timeout",
+            "no route to host",
+            "network is unreachable",
+            "not connected",
+            "connection closed",
+            "socket",
+        ):
+            if needle in msg:
+                return True
+
+        return False
+
+    def _maybe_reconnect(self, where: str, exc: BaseException) -> None:
+        if not self.reconnect_on_error:
+            return
+        if not self._is_connection_error(exc):
+            return
+
+        now = time.time()
+        if now < float(self._next_reconnect_ts):
+            return
+
+        # Exponential backoff: min_backoff * 2^failures, capped.
+        failures = int(self._reconnect_failures)
+        backoff = float(self.reconnect_min_backoff_sec) * (2.0 ** float(failures))
+        backoff = max(float(self.reconnect_min_backoff_sec), backoff)
+        backoff = min(float(self.reconnect_max_backoff_sec), backoff)
+
+        print(f"  [goodwe] modbus reconnecting ({self.host}:{self.port}) after {where}: {exc}")
+
+        if self.connect():
+            print(f"  [goodwe] modbus reconnected ({self.host}:{self.port})")
+            return
+
+        self._reconnect_failures = failures + 1
+        self._next_reconnect_ts = now + backoff
+        print(f"  [goodwe] modbus reconnect failed; next retry in {backoff:.1f}s")
+
     def _read_holding(self, address: int, count: int) -> List[int]:
         if not self.client:
-            raise RuntimeError("Modbus client not connected")
+            self._maybe_reconnect("read_holding:no_client", RuntimeError("Modbus client not connected"))
+            if not self.client:
+                raise RuntimeError("Modbus client not connected")
 
         def _call_rr() -> Any:
             # Pymodbus keyword changes across versions:
@@ -591,12 +699,15 @@ class GoodWeModbus:
                 return list(regs)
             except Exception as e:
                 last_exc = e
+                self._maybe_reconnect("read_holding", e)
                 time.sleep(0.05)
         raise RuntimeError(f"read_holding_registers failed: {last_exc}")
 
     def _read_input(self, address: int, count: int) -> List[int]:
         if not self.client:
-            raise RuntimeError("Modbus client not connected")
+            self._maybe_reconnect("read_input:no_client", RuntimeError("Modbus client not connected"))
+            if not self.client:
+                raise RuntimeError("Modbus client not connected")
 
         def _call_rr() -> Any:
             # Pymodbus keyword changes across versions:
@@ -653,13 +764,15 @@ class GoodWeModbus:
                 return list(regs)
             except Exception as e:
                 last_exc = e
+                self._maybe_reconnect("read_input", e)
                 time.sleep(0.05)
         raise RuntimeError(f"read_input_registers failed: {last_exc}")
 
-
     def _write_register(self, address: int, value: int) -> None:
         if not self.client:
-            raise RuntimeError("Modbus client not connected")
+            self._maybe_reconnect("write_register:no_client", RuntimeError("Modbus client not connected"))
+            if not self.client:
+                raise RuntimeError("Modbus client not connected")
 
         def _call_wr() -> Any:
             # Pymodbus keyword changes across versions:
@@ -714,6 +827,7 @@ class GoodWeModbus:
                 return
             except Exception as e:
                 last_exc = e
+                self._maybe_reconnect("write_register", e)
                 time.sleep(0.05)
         raise RuntimeError(f"write_register failed: {last_exc}")
 
@@ -1211,7 +1325,9 @@ def main() -> int:
 
     print(
         f"[start] amber_site_id={AMBER_SITE_ID} goodwe={GOODWE_HOST} unit={GOODWE_UNIT} "
-        f"timeout={MODBUS_TIMEOUT_SEC:.1f}s retries={MODBUS_RETRIES}"
+        f"timeout={MODBUS_TIMEOUT_SEC:.1f}s retries={MODBUS_RETRIES} "
+        f"reconnect={'on' if MODBUS_RECONNECT_ON_ERROR else 'off'} "
+        f"backoff={MODBUS_RECONNECT_MIN_BACKOFF_SEC:.1f}-{MODBUS_RECONNECT_MAX_BACKOFF_SEC:.1f}s"
     )
     print(
         f"[start] limit_mode={GOODWE_EXPORT_LIMIT_MODE} export_switch_reg={GOODWE_EXPORT_SWITCH_REG} "
@@ -1232,7 +1348,6 @@ def main() -> int:
         f"auto_charge_w={ALPHAESS_AUTO_CHARGE_W}W auto_charge_max_w={ALPHAESS_AUTO_CHARGE_MAX_W}W"
     )
 
-
     amber = AmberClient(AMBER_SITE_ID, AMBER_API_KEY)
     amber_poller = AmberPoller(
         amber,
@@ -1241,7 +1356,16 @@ def main() -> int:
         fetch_usage=AMBER_FETCH_USAGE,
         usage_resolution_min=AMBER_USAGE_RESOLUTION_MIN,
     )
-    modbus = GoodWeModbus(GOODWE_HOST, unit=GOODWE_UNIT, timeout_sec=MODBUS_TIMEOUT_SEC, retries=MODBUS_RETRIES)
+
+    modbus = GoodWeModbus(
+        GOODWE_HOST,
+        unit=GOODWE_UNIT,
+        timeout_sec=MODBUS_TIMEOUT_SEC,
+        retries=MODBUS_RETRIES,
+        reconnect_on_error=MODBUS_RECONNECT_ON_ERROR,
+        reconnect_min_backoff_sec=MODBUS_RECONNECT_MIN_BACKOFF_SEC,
+        reconnect_max_backoff_sec=MODBUS_RECONNECT_MAX_BACKOFF_SEC,
+    )
 
     if not modbus.connect():
         print("[error] failed to connect to GoodWe Modbus TCP")
@@ -1421,7 +1545,9 @@ def main() -> int:
                             target_w_f -= float(ALPHAESS_GRID_IMPORT_BIAS_W)
 
                         target_w = int(round(max(0.0, min(float(GOODWE_RATED_W), target_w_f))))
-                        target_reason = f"pload={pload_w}W charge={desired_charge_w}W" + (f"(auto+{auto_add_w}W)" if auto_add_w else "")
+                        target_reason = f"pload={pload_w}W charge={desired_charge_w}W" + (
+                            f"(auto+{auto_add_w}W)" if auto_add_w else ""
+                        )
                 else:
                     target_w = int(GOODWE_RATED_W)
                     target_reason = "export_allowed"
@@ -1507,3 +1633,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
