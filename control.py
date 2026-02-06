@@ -177,6 +177,11 @@ if not DEBUG:
 # GoodWe runtime profile
 RUNTIME_PROFILE = _env("RUNTIME_PROFILE", "auto")  # auto, dns, mt
 
+# Some runtime fields are optional / firmware-dependent and often return 0xFFFF (unknown).
+# To avoid hammering the inverter with the same reads every loop, we back off retries for
+# those optional fields when they appear unsupported.
+GOODWE_RUNTIME_OPTIONAL_RETRY_SEC = _env_float("GOODWE_RUNTIME_OPTIONAL_RETRY_SEC", 300.0)
+
 # AlphaESS OpenAPI
 ALPHAESS_OPENAPI_ENABLED = _env_bool("ALPHAESS_OPENAPI_ENABLED", True) or _env_bool("ALPHAESS_ENABLED", False)
 
@@ -958,6 +963,10 @@ class GoodWeRuntimeReader:
         self._resolved_profile: Optional[str] = None
         self._last_probe_error: Optional[str] = None
 
+        # Optional-register retry/backoff tracking (to reduce modbus traffic)
+        self._optional_next_try: Dict[str, float] = {}
+        self._optional_retry_sec: float = float(GOODWE_RUNTIME_OPTIONAL_RETRY_SEC)
+
         if self.profile in ("dns", "dt", "mt", "et", "off", "none", "disabled"):
             self._resolved_profile = self.profile
 
@@ -1120,48 +1129,54 @@ class GoodWeRuntimeReader:
         if temp_u16 != 0xFFFF:
 
             temp_c = float(_u16_to_i16(temp_u16) / 10.0)
-
         # Meter / grid active power (signed W) at 30196 (if present)
 
         feed_w: Optional[int] = None
-
         meter_ok: Optional[int] = None
-
-        ap = self._try_read_any_u16(30196, prefer="holding")
-
-        if ap is not None and (int(ap) & 0xFFFF) != 0xFFFF:
-
-            feed_w = int(_u16_to_i16(ap))
-
-            meter_ok = 1
-
-        # Optional: some firmwares expose a 36000 "meter/comm" block (ET-style)
-        # which includes RSSI and meter comm status. GW5000-DNS devices often mirror this
-        # via holding-register reads, not input-register reads.
-
         wifi: Optional[int] = None
 
-        rssi = self._try_read_any_u16(36001, prefer="holding")
+        now = time.time()
 
-        if rssi is not None and (int(rssi) & 0xFFFF) != 0xFFFF:
+        # 30196 is optional on some firmware; if it returns 0xFFFF, back off retries.
+        if now >= float(self._optional_next_try.get("30196", 0.0)):
+            ap = self._try_read_any_u16(30196, prefer="holding")
+            if ap is not None and (int(ap) & 0xFFFF) != 0xFFFF:
+                feed_w = int(_u16_to_i16(ap))
+                meter_ok = 1
+            else:
+                self._optional_next_try["30196"] = now + float(self._optional_retry_sec)
 
-            wifi = int(_u16_to_i16(rssi))
+        # Optional: some firmwares expose a 36000 "meter/comm" block (ET-style)
+        # which includes RSSI, meter comm status, and sometimes grid active power at 36008.
+        # Many GW5000-DNS devices mirror this but return 0xFFFF for unsupported fields.
+        if now >= float(self._optional_next_try.get("36000", 0.0)):
+            meter_regs = self._try_read_any_u16s(36000, 9, prefer="holding")  # 36000..36008
+            any_valid = False
+            if meter_regs and len(meter_regs) >= 9:
+                try:
+                    rssi = int(meter_regs[1]) & 0xFFFF  # 36001
+                    if rssi != 0xFFFF:
+                        wifi = int(_u16_to_i16(rssi))
+                        any_valid = True
+                except Exception:
+                    pass
+                try:
+                    mstat = int(meter_regs[4]) & 0xFFFF  # 36004
+                    if mstat != 0xFFFF:
+                        meter_ok = int(mstat)
+                        any_valid = True
+                except Exception:
+                    pass
+                try:
+                    ap2 = int(meter_regs[8]) & 0xFFFF  # 36008
+                    if ap2 != 0xFFFF and feed_w is None:
+                        feed_w = int(_u16_to_i16(ap2))
+                        any_valid = True
+                except Exception:
+                    pass
 
-        mstat = self._try_read_any_u16(36004, prefer="holding")
-
-        if mstat is not None and (int(mstat) & 0xFFFF) != 0xFFFF:
-
-            meter_ok = int(mstat)
-
-        # If 30196 looks unsupported, sometimes 36008 exposes grid active power
-
-        if feed_w is None:
-
-            ap2 = self._try_read_any_u16(36008, prefer="holding")
-
-            if ap2 is not None and (int(ap2) & 0xFFFF) != 0xFFFF:
-
-                feed_w = int(_u16_to_i16(ap2))
+            if not any_valid:
+                self._optional_next_try["36000"] = now + float(self._optional_retry_sec)
 
         # Power limit function indicator for logs (0=pct, 1=active_pct)
         pwr_limit_fn = 1 if str(GOODWE_EXPORT_LIMIT_MODE).strip().lower() == "active_pct" else 0
@@ -1688,7 +1703,7 @@ def main() -> int:
                             export_costs = True
                             export_costs_calc = "feedIn=nan -> costs=True"
                         else:
-                            export_costs = fc > th # DO NOT CHANGE THIS IT IS CORRECT with a >
+                            export_costs = fc > th # DO NOT CHANGE THIS IT IS CORRECT >
                             export_costs_calc = f"feedIn={fc:.3f}c>{th:.3f}c => costs={export_costs}" # Same here >
                     except Exception as _e:
                         export_costs = True
@@ -1745,7 +1760,7 @@ def main() -> int:
                 if amber_age_s is not None:
                     amber_desc += f"(age={amber_age_s}s)"
                 if amber_interval_end is not None:
-                    amber_desc += f"(end={amber_interval_end.isoformat()}Z)"
+                    amber_desc += f"(end={amber_interval_end.isoformat()})"
                 if amber_err and DEBUG:
                     amber_desc += f"(err={amber_err})"
                 if amber_import_w is not None or amber_feed_w is not None:
