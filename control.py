@@ -1448,7 +1448,7 @@ def main() -> int:
 
                 # If Amber is stale/unavailable, be conservative: assume export may be costing money.
                 if amber_ok:
-                    export_costs = (feed_c is not None) and (float(feed_c) < float(EXPORT_COST_THRESHOLD_C))
+                    export_costs = (feed_c is not None) and (float(feed_c) > float(EXPORT_COST_THRESHOLD_C))
                     amber_state = "ok"
                 else:
                     export_costs = True
