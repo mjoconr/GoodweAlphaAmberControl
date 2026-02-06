@@ -682,7 +682,7 @@ class GoodWeModbus:
                     rr = fn(*a, **kw)
                     if DEBUG:
                         used = "positional" if not kw else ",".join(sorted(kw.keys()))
-                        print(f"  [pymodbus] read_holding_registers compat used: {used}")
+                        print(f"  [pymodbus] read_holding_registers compat used: {used} addr={address} count={count} unit={uid}")
                     return rr
                 except TypeError as e:
                     last_te = e
@@ -747,7 +747,7 @@ class GoodWeModbus:
                     rr = fn(*a, **kw)
                     if DEBUG:
                         used = "positional" if not kw else ",".join(sorted(kw.keys()))
-                        print(f"  [pymodbus] read_input_registers compat used: {used}")
+                        print(f"  [pymodbus] read_input_registers compat used: {used} addr={address} count={count} unit={uid}")
                     return rr
                 except TypeError as e:
                     last_te = e
@@ -813,7 +813,7 @@ class GoodWeModbus:
                     rr = fn(*a, **kw)
                     if DEBUG:
                         used = "positional" if not kw else ",".join(sorted(kw.keys()))
-                        print(f"  [pymodbus] write_register compat used: {used}")
+                        print(f"  [pymodbus] write_register compat used: {used} addr={address} value={v} unit={uid}")
                     return rr
                 except TypeError as e:
                     last_te = e
@@ -936,12 +936,20 @@ class GoodWeRuntimeReader:
     """Read a small set of runtime values for feedback.
 
     This is best-effort only (for logging/telemetry and optional future control loops).
-    Different GoodWe models/firmware expose runtime data via different register maps and
-    sometimes via *input* registers (function 04) rather than holding registers (function 03).
 
-    To avoid spamming the console with Modbus exception responses, the default "auto"
-    mode probes the candidate profiles once and then sticks with the first one that works.
-    If neither works, runtime reads are disabled.
+    GoodWe inverters expose different runtime maps depending on family/firmware.
+    The GW5000-DNS is in the DT/D-NS family, which uses input registers around 30100.
+    Some other families (e.g. ET) use input registers around 35100 plus an extended meter
+    block around 36000.
+
+    Profiles:
+      * auto (default): probe DT/D-NS first, then ET.
+      * dns / dt / mt: DT/D-NS family map (30100 + optional 30196 meter).
+      * et: ET family map (35100 + optional 36000 meter).
+      * off / none / disabled: do not read runtime.
+
+    NOTE: Profile name "mt" is treated as DT/D-NS for backward compatibility with earlier
+    versions of this script where users set RUNTIME_PROFILE=mt to mean "Modbus-TCP".
     """
 
     def __init__(self, modbus: GoodWeModbus, profile: str = "auto"):
@@ -950,8 +958,7 @@ class GoodWeRuntimeReader:
         self._resolved_profile: Optional[str] = None
         self._last_probe_error: Optional[str] = None
 
-        # If the user explicitly picked a profile, lock to it.
-        if self.profile in ("dns", "mt", "off", "none", "disabled"):
+        if self.profile in ("dns", "dt", "mt", "et", "off", "none", "disabled"):
             self._resolved_profile = self.profile
 
     def read(self) -> GoodWeRuntime:
@@ -960,77 +967,213 @@ class GoodWeRuntimeReader:
         if p in ("off", "none", "disabled"):
             return GoodWeRuntime(ts=time.time(), raw={"profile": "off"})
 
-        if p == "dns":
-            return self._read_dns()
+        if p in ("dns", "dt", "mt"):
+            return self._read_dt_family()
 
-        if p == "mt":
-            return self._read_mt()
+        if p == "et":
+            return self._read_et_family()
 
-        # auto: probe once then stick.
         if p == "auto":
-            if self._resolved_profile == "dns":
-                return self._read_dns()
-            if self._resolved_profile == "mt":
-                return self._read_mt()
+            # Probe once then stick.
+            if self._resolved_profile in ("dns", "dt", "mt"):
+                return self._read_dt_family()
+            if self._resolved_profile == "et":
+                return self._read_et_family()
             if self._resolved_profile in ("off", "none", "disabled"):
                 return GoodWeRuntime(ts=time.time(), raw={"profile": "off", "err": self._last_probe_error})
 
-            for candidate in ("dns", "mt"):
+            for candidate in ("dt", "et"):
                 try:
-                    if candidate == "dns":
-                        rt = self._read_dns()
-                    else:
-                        rt = self._read_mt()
+                    rt = self._read_dt_family() if candidate == "dt" else self._read_et_family()
                     self._resolved_profile = candidate
                     return rt
                 except Exception as e:
                     self._last_probe_error = str(e)
-                    continue
 
             self._resolved_profile = "off"
             return GoodWeRuntime(ts=time.time(), raw={"profile": "off", "err": self._last_probe_error})
 
-        # Unknown profile -> disabled
         return GoodWeRuntime(ts=time.time(), raw={"profile": "off", "err": f"unknown profile: {p}"})
 
-    def _read_regs_best_effort(self, base_reg: int, count: int) -> List[int]:
-        """Try input registers first, then holding registers."""
+    def _read_regs_best_effort(self, base_reg: int, count: int) -> list[int]:
+        """Try input registers first, then holding registers (some firmwares mirror input -> holding)."""
         try:
             return self.modbus.read_input_u16s(int(base_reg), int(count))
         except Exception:
             return self.modbus.read_u16s(int(base_reg), int(count))
 
-    def _read_dns(self) -> GoodWeRuntime:
-        # Best-effort guesses for GW5000-DNS style.
-        regs = self._read_regs_best_effort(35103, 20)
+    def _try_read_input_u16(self, reg: int) -> Optional[int]:
+        try:
+            return int(self.modbus.read_input_u16(int(reg)))
+        except Exception:
+            return None
 
-        # Very rough decoding; if this mapping isn't right on your box, it's still safe.
-        gen = _regs_to_i32(regs[0], regs[1])  # may be total active power
-        feed = _regs_to_i32(regs[2], regs[3])  # may be meter power
-        temp = _u16_to_i16(regs[10]) / 10.0
+    def _try_read_input_u16s(self, reg: int, count: int) -> Optional[list[int]]:
+        try:
+            return [int(x) for x in self.modbus.read_input_u16s(int(reg), int(count))]
+        except Exception:
+            return None
+
+    @staticmethod
+    def _i16_at(regs: list[int], base: int, reg: int) -> int:
+        idx = int(reg) - int(base)
+        if idx < 0 or idx >= len(regs):
+            raise IndexError(f"register {reg} out of range (base={base}, len={len(regs)})")
+        return _u16_to_i16(int(regs[idx]))
+
+    @staticmethod
+    def _u16_at(regs: list[int], base: int, reg: int) -> int:
+        idx = int(reg) - int(base)
+        if idx < 0 or idx >= len(regs):
+            raise IndexError(f"register {reg} out of range (base={base}, len={len(regs)})")
+        return int(regs[idx]) & 0xFFFF
+
+    def _read_dt_family(self) -> GoodWeRuntime:
+        """DT / D-NS family (GW5000-DNS)."""
+        base = 30100
+        # DT._READ_RUNNING_DATA uses 0x7594 (30100) count 0x49 (73) in the goodwe library.
+        regs = self._read_regs_best_effort(base, 73)
+
+        # PV estimates (0.1V, 0.1A are common; power is approximate but stable enough for logs)
+        vpv1_v = self._u16_at(regs, base, 30103) / 10.0
+        ipv1_a = self._u16_at(regs, base, 30104) / 10.0
+        vpv2_v = self._u16_at(regs, base, 30105) / 10.0
+        ipv2_a = self._u16_at(regs, base, 30106) / 10.0
+
+        # Some models have PV3, ignore if clearly absent/0.
+        vpv3_raw = None
+        ipv3_raw = None
+        try:
+            vpv3_raw = self._u16_at(regs, base, 30107)
+            ipv3_raw = self._u16_at(regs, base, 30108)
+        except Exception:
+            pass
+        vpv3_v = (vpv3_raw or 0) / 10.0
+        ipv3_a = (ipv3_raw or 0) / 10.0
+
+        ppv_est_w = int(round((vpv1_v * ipv1_a) + (vpv2_v * ipv2_a) + (vpv3_v * ipv3_a)))
+
+        # Generation / inverter output power (signed 16-bit W)
+        gen_w = int(self._i16_at(regs, base, 30128))
+
+        # Temperature (signed 0.1C)
+        temp_c = float(self._i16_at(regs, base, 30141) / 10.0)
+
+        # Meter / grid active power (signed W) at 30196 (if present)
+        feed_w: Optional[int] = None
+        meter_ok: Optional[int] = None
+        ap = self._try_read_input_u16(30196)
+        if ap is not None:
+            feed_w = int(_u16_to_i16(ap))
+            meter_ok = 1
+
+        # Optional: try the ET-style meter block for RSSI + meter comm status (some firmwares expose it)
+        wifi: Optional[int] = None
+        rssi = self._try_read_input_u16(36001)
+        if rssi is not None:
+            wifi = int(_u16_to_i16(rssi))
+        mstat = self._try_read_input_u16(36004)
+        if mstat is not None:
+            meter_ok = int(mstat)
+
+        # Power limit function indicator for logs (0=pct, 1=active_pct)
+        pwr_limit_fn = 1 if str(GOODWE_EXPORT_LIMIT_MODE).strip().lower() == "active_pct" else 0
 
         return GoodWeRuntime(
             ts=time.time(),
-            gen_power_w=int(gen),
-            feed_power_w=int(feed),
-            inverter_temp_c=float(temp),
-            raw={"profile": "dns", "regs": regs},
+            gen_power_w=gen_w,
+            pv_power_est_w=ppv_est_w,
+            feed_power_w=feed_w,
+            power_limit_fn=pwr_limit_fn,
+            meter_ok=meter_ok,
+            wifi=wifi,
+            inverter_temp_c=temp_c,
+            raw={
+                "profile": "dt",
+                "read_base": base,
+                "read_count": len(regs),
+                "regs": regs,
+                "addr": {
+                    "vpv1": 30103,
+                    "ipv1": 30104,
+                    "vpv2": 30105,
+                    "ipv2": 30106,
+                    "total_inverter_power": 30128,
+                    "temperature": 30141,
+                    "meter_active_power": 30196,
+                    "rssi_opt": 36001,
+                    "meter_comm_status_opt": 36004,
+                },
+            },
         )
 
-    def _read_mt(self) -> GoodWeRuntime:
-        # Alternative profile.
-        regs = self._read_regs_best_effort(36001, 20)
+    def _read_et_family(self) -> GoodWeRuntime:
+        """ET family (hybrid) style runtime map."""
+        base = 35100
+        # ET._READ_RUNNING_DATA uses 0x891c (35100) count 0x7d (125) in the goodwe library.
+        regs = self._read_regs_best_effort(base, 125)
 
-        gen = _regs_to_i32(regs[0], regs[1])
-        feed = _regs_to_i32(regs[2], regs[3])
-        temp = _u16_to_i16(regs[10]) / 10.0
+        # PV power uses 32-bit values (2 regs each) at 35105/35109/35113/35117
+        def _u32_at(addr: int) -> int:
+            i = int(addr) - int(base)
+            if i < 0 or i + 1 >= len(regs):
+                raise IndexError(f"register {addr} out of range")
+            return ((int(regs[i]) & 0xFFFF) << 16) | (int(regs[i + 1]) & 0xFFFF)
+
+        ppv1 = _u32_at(35105)
+        ppv2 = _u32_at(35109)
+        ppv3 = _u32_at(35113)
+        ppv4 = _u32_at(35117)
+        ppv_est_w = int(max(0, ppv1) + max(0, ppv2) + max(0, ppv3) + max(0, ppv4))
+
+        gen_w = int(self._i16_at(regs, base, 35138))  # Total inverter power (W)
+        temp_c = float(self._i16_at(regs, base, 35176) / 10.0)  # Radiator temp (0.1C)
+
+        # Prefer extended meter block (36000) for grid active power, RSSI, meter comm status
+        feed_w: Optional[int] = None
+        meter_ok: Optional[int] = None
+        wifi: Optional[int] = None
+
+        meter_regs = self._try_read_input_u16s(36000, 0x2d)  # 45 regs
+        if meter_regs:
+            try:
+                # active_power_total at 36008 (signed 16-bit W)
+                feed_w = int(_u16_to_i16(int(meter_regs[8])))
+            except Exception:
+                pass
+            try:
+                wifi = int(_u16_to_i16(int(meter_regs[1])))  # rssi at 36001
+            except Exception:
+                pass
+            try:
+                meter_ok = int(meter_regs[4])  # meter_comm_status at 36004
+            except Exception:
+                pass
+
+        # Fallback if no extended meter block
+        if feed_w is None:
+            try:
+                feed_w = int(self._i16_at(regs, base, 35140))  # active_power
+            except Exception:
+                feed_w = None
+
+        pwr_limit_fn = 1 if str(GOODWE_EXPORT_LIMIT_MODE).strip().lower() == "active_pct" else 0
 
         return GoodWeRuntime(
             ts=time.time(),
-            gen_power_w=int(gen),
-            feed_power_w=int(feed),
-            inverter_temp_c=float(temp),
-            raw={"profile": "mt", "regs": regs},
+            gen_power_w=gen_w,
+            pv_power_est_w=ppv_est_w,
+            feed_power_w=feed_w,
+            power_limit_fn=pwr_limit_fn,
+            meter_ok=meter_ok,
+            wifi=wifi,
+            inverter_temp_c=temp_c,
+            raw={
+                "profile": "et",
+                "read_base": base,
+                "read_count": len(regs),
+                "regs": regs,
+            },
         )
 
 
