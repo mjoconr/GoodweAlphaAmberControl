@@ -958,14 +958,6 @@ class GoodWeRuntimeReader:
         self._resolved_profile: Optional[str] = None
         self._last_probe_error: Optional[str] = None
 
-        # Addressing quirks:
-        # GoodWe documentation often labels runtime data as 3xxxx "Input registers" (FC04),
-        # but some firmwares expose these via FC03 (holding) and/or expect 0-based offsets
-        # (e.g. 30100 -> 99 or 100 on the wire). We auto-detect and cache a delta for
-        # 3xxxx logical registers to make logs reliable.
-        self._reg3x_delta: Optional[int] = None
-        self._reg3x_prefer_fn: Optional[str] = None  # "input" or "holding"
-
         if self.profile in ("dns", "dt", "mt", "et", "off", "none", "disabled"):
             self._resolved_profile = self.profile
 
@@ -1003,154 +995,72 @@ class GoodWeRuntimeReader:
 
         return GoodWeRuntime(ts=time.time(), raw={"profile": "off", "err": f"unknown profile: {p}"})
 
-@staticmethod
-def _candidate_wire_addrs(logical_reg: int) -> list[int]:
-    logical_reg = int(logical_reg)
-    cands: list[int] = [logical_reg]
-    if logical_reg >= 30000:
-        cands.append(logical_reg - 30000)
-    if logical_reg >= 30001:
-        cands.append(logical_reg - 30001)
-    out: list[int] = []
-    for a in cands:
-        if a < 0:
-            continue
-        if a not in out:
-            out.append(a)
-    return out
+    def _read_regs_best_effort(self, base_reg: int, count: int, prefer: str = "input") -> list[int]:
+        """Read a contiguous register block, trying the preferred function first then falling back.
 
-def _read_regs_best_effort(self, base_reg: int, count: int) -> list[int]:
-    """Read a block of registers with best-effort addressing + function-code fallbacks.
+        Some GoodWe firmwares publish runtime data in the 3xxxx range but only respond when queried
+        via *holding* register reads. We support both to avoid slow timeouts on devices like
+        GW5000-DNS, while still working on firmwares that require input-register reads.
+        """
+        base_reg = int(base_reg)
+        count = int(count)
+        prefer = str(prefer or "input").strip().lower()
 
-    For 3xxxx logical registers (runtime maps), we:
-      - try cached delta (logical -> wire) first if known
-      - else probe common offsets (no offset, -30000, -30001)
-      - try FC04 (input) and FC03 (holding) for each candidate
-    """
-    logical_base = int(base_reg)
-    count = int(count)
-
-    def _try_read(wire_base: int, fn: str) -> list[int]:
-        if fn == "input":
-            return [int(x) for x in self.modbus.read_input_u16s(int(wire_base), int(count))]
-        return [int(x) for x in self.modbus.read_u16s(int(wire_base), int(count))]
-
-    # Non-3xxxx space: keep the simple fallback.
-    if logical_base < 30000:
-        try:
-            return _try_read(logical_base, "input")
-        except Exception:
-            return _try_read(logical_base, "holding")
-
-    # If we've already discovered a working delta/fn for 3xxxx, use it first.
-    if self._reg3x_delta is not None:
-        wire_base = int(logical_base - int(self._reg3x_delta))
-        prefer = self._reg3x_prefer_fn or "input"
-        other = "holding" if prefer == "input" else "input"
-        try:
-            return _try_read(wire_base, prefer)
-        except Exception:
+        if prefer == "holding":
             try:
-                return _try_read(wire_base, other)
+                return self.modbus.read_u16s(base_reg, count)
             except Exception:
-                # fall back to probing below
-                pass
+                return self.modbus.read_input_u16s(base_reg, count)
 
-    last_exc: Optional[Exception] = None
-    for wire_base in self._candidate_wire_addrs(logical_base):
-        for fn in ("input", "holding"):
-            try:
-                regs = _try_read(wire_base, fn)
-                self._reg3x_delta = int(logical_base - wire_base)
-                self._reg3x_prefer_fn = fn
-                return regs
-            except Exception as e:
-                last_exc = e
-                continue
-    raise last_exc or RuntimeError("runtime register read failed")
-
-def _try_read_input_u16(self, reg: int) -> Optional[int]:
-    reg = int(reg)
-
-    def _try_read(wire_reg: int, fn: str) -> int:
-        if fn == "input":
-            return int(self.modbus.read_input_u16(int(wire_reg)))
-        return int(self.modbus.read_u16(int(wire_reg)))
-
-    if reg < 30000:
         try:
-            return _try_read(reg, "input")
+            return self.modbus.read_input_u16s(base_reg, count)
+        except Exception:
+            return self.modbus.read_u16s(base_reg, count)
+
+
+    def _try_read_any_u16(self, reg: int, prefer: str = "input") -> Optional[int]:
+        reg = int(reg)
+        prefer = str(prefer or "input").strip().lower()
+
+        if prefer == "holding":
+            try:
+                return int(self.modbus.read_u16(reg))
+            except Exception:
+                try:
+                    return int(self.modbus.read_input_u16(reg))
+                except Exception:
+                    return None
+
+        try:
+            return int(self.modbus.read_input_u16(reg))
         except Exception:
             try:
-                return _try_read(reg, "holding")
+                return int(self.modbus.read_u16(reg))
             except Exception:
                 return None
 
-    if self._reg3x_delta is not None:
-        wire_reg = int(reg - int(self._reg3x_delta))
-        prefer = self._reg3x_prefer_fn or "input"
-        other = "holding" if prefer == "input" else "input"
+
+    def _try_read_any_u16s(self, reg: int, count: int, prefer: str = "input") -> Optional[list[int]]:
+        reg = int(reg)
+        count = int(count)
+        prefer = str(prefer or "input").strip().lower()
+
+        if prefer == "holding":
+            try:
+                return [int(x) for x in self.modbus.read_u16s(reg, count)]
+            except Exception:
+                try:
+                    return [int(x) for x in self.modbus.read_input_u16s(reg, count)]
+                except Exception:
+                    return None
+
         try:
-            return _try_read(wire_reg, prefer)
+            return [int(x) for x in self.modbus.read_input_u16s(reg, count)]
         except Exception:
             try:
-                return _try_read(wire_reg, other)
-            except Exception:
-                # probe below
-                pass
-
-    for wire_reg in self._candidate_wire_addrs(reg):
-        for fn in ("input", "holding"):
-            try:
-                v = _try_read(wire_reg, fn)
-                self._reg3x_delta = int(reg - wire_reg)
-                self._reg3x_prefer_fn = fn
-                return v
-            except Exception:
-                continue
-    return None
-
-def _try_read_input_u16s(self, reg: int, count: int) -> Optional[list[int]]:
-    reg = int(reg)
-    count = int(count)
-
-    def _try_read(wire_reg: int, fn: str) -> list[int]:
-        if fn == "input":
-            return [int(x) for x in self.modbus.read_input_u16s(int(wire_reg), int(count))]
-        return [int(x) for x in self.modbus.read_u16s(int(wire_reg), int(count))]
-
-    if reg < 30000:
-        try:
-            return _try_read(reg, "input")
-        except Exception:
-            try:
-                return _try_read(reg, "holding")
+                return [int(x) for x in self.modbus.read_u16s(reg, count)]
             except Exception:
                 return None
-
-    if self._reg3x_delta is not None:
-        wire_reg = int(reg - int(self._reg3x_delta))
-        prefer = self._reg3x_prefer_fn or "input"
-        other = "holding" if prefer == "input" else "input"
-        try:
-            return _try_read(wire_reg, prefer)
-        except Exception:
-            try:
-                return _try_read(wire_reg, other)
-            except Exception:
-                # probe below
-                pass
-
-    for wire_reg in self._candidate_wire_addrs(reg):
-        for fn in ("input", "holding"):
-            try:
-                v = _try_read(wire_reg, fn)
-                self._reg3x_delta = int(reg - wire_reg)
-                self._reg3x_prefer_fn = fn
-                return v
-            except Exception:
-                continue
-    return None
 
     @staticmethod
     def _i16_at(regs: list[int], base: int, reg: int) -> int:
@@ -1170,7 +1080,7 @@ def _try_read_input_u16s(self, reg: int, count: int) -> Optional[list[int]]:
         """DT / D-NS family (GW5000-DNS)."""
         base = 30100
         # DT._READ_RUNNING_DATA uses 0x7594 (30100) count 0x49 (73) in the goodwe library.
-        regs = self._read_regs_best_effort(base, 73)
+        regs = self._read_regs_best_effort(base, 73, prefer="holding")
 
         # PV estimates (0.1V, 0.1A are common; power is approximate but stable enough for logs)
         vpv1_v = self._u16_at(regs, base, 30103) / 10.0
@@ -1192,27 +1102,66 @@ def _try_read_input_u16s(self, reg: int, count: int) -> Optional[list[int]]:
         ppv_est_w = int(round((vpv1_v * ipv1_a) + (vpv2_v * ipv2_a) + (vpv3_v * ipv3_a)))
 
         # Generation / inverter output power (signed 16-bit W)
-        gen_w = int(self._i16_at(regs, base, 30128))
+
+        gen_u16 = self._u16_at(regs, base, 30128)
+
+        gen_w: Optional[int] = None
+
+        if gen_u16 != 0xFFFF:
+
+            gen_w = int(_u16_to_i16(gen_u16))
 
         # Temperature (signed 0.1C)
-        temp_c = float(self._i16_at(regs, base, 30141) / 10.0)
+
+        temp_u16 = self._u16_at(regs, base, 30141)
+
+        temp_c: Optional[float] = None
+
+        if temp_u16 != 0xFFFF:
+
+            temp_c = float(_u16_to_i16(temp_u16) / 10.0)
 
         # Meter / grid active power (signed W) at 30196 (if present)
+
         feed_w: Optional[int] = None
+
         meter_ok: Optional[int] = None
-        ap = self._try_read_input_u16(30196)
-        if ap is not None:
+
+        ap = self._try_read_any_u16(30196, prefer="holding")
+
+        if ap is not None and (int(ap) & 0xFFFF) != 0xFFFF:
+
             feed_w = int(_u16_to_i16(ap))
+
             meter_ok = 1
 
-        # Optional: try the ET-style meter block for RSSI + meter comm status (some firmwares expose it)
+        # Optional: some firmwares expose a 36000 "meter/comm" block (ET-style)
+        # which includes RSSI and meter comm status. GW5000-DNS devices often mirror this
+        # via holding-register reads, not input-register reads.
+
         wifi: Optional[int] = None
-        rssi = self._try_read_input_u16(36001)
-        if rssi is not None:
+
+        rssi = self._try_read_any_u16(36001, prefer="holding")
+
+        if rssi is not None and (int(rssi) & 0xFFFF) != 0xFFFF:
+
             wifi = int(_u16_to_i16(rssi))
-        mstat = self._try_read_input_u16(36004)
-        if mstat is not None:
+
+        mstat = self._try_read_any_u16(36004, prefer="holding")
+
+        if mstat is not None and (int(mstat) & 0xFFFF) != 0xFFFF:
+
             meter_ok = int(mstat)
+
+        # If 30196 looks unsupported, sometimes 36008 exposes grid active power
+
+        if feed_w is None:
+
+            ap2 = self._try_read_any_u16(36008, prefer="holding")
+
+            if ap2 is not None and (int(ap2) & 0xFFFF) != 0xFFFF:
+
+                feed_w = int(_u16_to_i16(ap2))
 
         # Power limit function indicator for logs (0=pct, 1=active_pct)
         pwr_limit_fn = 1 if str(GOODWE_EXPORT_LIMIT_MODE).strip().lower() == "active_pct" else 0
@@ -1272,7 +1221,7 @@ def _try_read_input_u16s(self, reg: int, count: int) -> Optional[list[int]]:
         meter_ok: Optional[int] = None
         wifi: Optional[int] = None
 
-        meter_regs = self._try_read_input_u16s(36000, 0x2d)  # 45 regs
+        meter_regs = self._try_read_any_u16s(36000, 0x2d, prefer="holding")  # 45 regs
         if meter_regs:
             try:
                 # active_power_total at 36008 (signed 16-bit W)
@@ -1739,8 +1688,8 @@ def main() -> int:
                             export_costs = True
                             export_costs_calc = "feedIn=nan -> costs=True"
                         else:
-                            export_costs = fc > th # DO NOT CHANGE THIS IT IS CORRECT
-                            export_costs_calc = f"feedIn={fc:.3f}c>{th:.3f}c => costs={export_costs}"
+                            export_costs = fc > th # DO NOT CHANGE THIS IT IS CORRECT with a >
+                            export_costs_calc = f"feedIn={fc:.3f}c>{th:.3f}c => costs={export_costs}" # Same here >
                     except Exception as _e:
                         export_costs = True
                         export_costs_calc = f"feedIn err -> costs=True ({_e})" if DEBUG else "feedIn err -> costs=True"
@@ -1901,7 +1850,7 @@ def main() -> int:
                     f"[{_iso_now()}] import={_fmt_opt(import_c,'c')} feedIn={_fmt_opt(feed_c,'c')} "
                     f"thresh={EXPORT_COST_THRESHOLD_C}c export_costs={export_costs} {amber_desc} "
                     f"gen={_fmt_opt(gen_w,'W')} pv_est={_fmt_opt(pv_est_w,'W')} feed={_fmt_opt(feed_w,'W')} "
-                    f"pwrLimitFn={_fmt_opt(pwr_limit_fn)} meterOK={_fmt_opt(meter_ok)} wifi={_fmt_opt(wifi)} temp={_fmt_opt(temp_c,'C')} "
+                    f"pwrLimitFn={_fmt_opt(pwr_limit_fn)} meterOK={_fmt_opt(meter_ok)} wifi={_fmt_opt(wifi,'%')} temp={_fmt_opt(temp_c,'C')} "
                     f"{alpha_desc} reason={target_reason} "
                     f"-> want_limit={want_pct}% (~{target_w}W) (enabled={want_enabled}) "
                     f"cur_limit={current_limit}"
