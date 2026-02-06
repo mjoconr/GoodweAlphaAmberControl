@@ -76,6 +76,8 @@ Every loop, it:
   * Default threshold is `0.0c`
   * Meaning: if feed-in becomes negative, exporting costs money.
 
+* If you want to avoid exporting unless feed-in is above some minimum (even if it’s still positive), set `EXPORT_COST_THRESHOLD_C` to that value (e.g. `1.0`).
+
 3. **Fail-safe behaviour**
 
 * If Amber is stale/unavailable beyond `AMBER_MAX_STALE_SEC`, the script assumes exporting **may** be costly.
@@ -83,43 +85,19 @@ Every loop, it:
 
 ---
 
-## Control modes when export would cost money
+## Control behaviour when export would cost money
 
-### A) If battery is NOT full (SOC < `ALPHAESS_FULL_SOC_PCT`)
+When `export_costs=True` (i.e. `feedIn < EXPORT_COST_THRESHOLD_C`), the controller aims to keep **grid export near zero** by limiting the GW5000 to roughly:
 
-You can also define a **near‑full** threshold with `ALPHAESS_NEAR_FULL_SOC_PCT`.
-When SOC is at/above this value (or SOC is unknown), the controller uses the stricter mode (B) to keep export near zero.
+* **target PV** ≈ `pload + battery_charge` (then trimmed using `pGrid` feedback)
+* a small **import bias** (`ALPHAESS_GRID_IMPORT_BIAS_W`) is applied to avoid tiny accidental exports
 
-Goal: keep the GoodWe producing (and let the battery start charging), but avoid significant grid export.
+This naturally does what you want near full battery: as the battery charge tapers down, `battery_charge` drops, so the target drops and the GW5000 backs off automatically — no extra “near‑full SOC” threshold is required.
 
-Behaviour:
+Optional “auto charge headroom” (helps charging start when SOC is low):
 
-* Allow GoodWe to run at **100%** until Alpha reports grid export exceeds:
-
-  * `ALPHAESS_EXPORT_ALLOW_W_BELOW_FULL_SOC` (default 50W)
-* If export exceeds that, back off output proportionally based on export amount (feedback loop).
-
-This helps avoid oscillation and helps the battery “grab” the surplus.
-
-### B) If battery IS full (SOC >= `ALPHAESS_FULL_SOC_PCT`) or SOC unknown
-
-Goal: cover house load (and any charge demand), keep export near zero, bias slightly toward importing a small amount.
-
-Behaviour:
-
-* Base target power ≈ `pload + desired_charge`
-* Apply pGrid feedback:
-
-  * importing -> allow more PV
-  * exporting -> reduce PV
-* Apply a small import bias (`ALPHAESS_GRID_IMPORT_BIAS_W`) to avoid tiny accidental exports.
-
-Optional “auto charge headroom”:
-
-* If SOC < `ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT` and `ALPHAESS_AUTO_CHARGE_W > 0`,
-  the controller will assume the battery can absorb up to `ALPHAESS_AUTO_CHARGE_W` and will leave PV headroom accordingly.
-
----
+* If `SOC < ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT` and `ALPHAESS_AUTO_CHARGE_W > 0`, the controller will assume the battery can absorb up to `ALPHAESS_AUTO_CHARGE_W` (clamped by `ALPHAESS_AUTO_CHARGE_MAX_W`) and will leave PV headroom accordingly.
+* Set `ALPHAESS_AUTO_CHARGE_W=0` to disable this behaviour.
 
 ## When export does NOT cost money
 
