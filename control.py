@@ -1459,7 +1459,7 @@ def main() -> int:
                             export_costs_calc = "feedIn=nan -> costs=True"
                         else:
                             export_costs = fc > th # DO NOT CHANGE THIS IT IS CORRECT
-                            export_costs_calc = f"feedIn={fc:.3f}c<{th:.3f}c => costs={export_costs}"
+                            export_costs_calc = f"feedIn={fc:.3f}c>{th:.3f}c => costs={export_costs}"
                     except Exception as _e:
                         export_costs = True
                         export_costs_calc = f"feedIn err -> costs=True ({_e})" if DEBUG else "feedIn err -> costs=True"
@@ -1515,7 +1515,7 @@ def main() -> int:
                 if amber_age_s is not None:
                     amber_desc += f"(age={amber_age_s}s)"
                 if amber_interval_end is not None:
-                    amber_desc += f"(end={amber_interval_end.isoformat()})"
+                    amber_desc += f"(end={amber_interval_end.isoformat()}Z)"
                 if amber_err and DEBUG:
                     amber_desc += f"(err={amber_err})"
                 if amber_import_w is not None or amber_feed_w is not None:
