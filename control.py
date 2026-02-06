@@ -1740,7 +1740,7 @@ def main() -> int:
                             export_costs_calc = "feedIn=nan -> costs=True"
                         else:
                             export_costs = fc > th # DO NOT CHANGE THIS IT IS CORRECT
-                            export_costs_calc = f"feedIn={fc:.3f}c<{th:.3f}c => costs={export_costs}"
+                            export_costs_calc = f"feedIn={fc:.3f}c>{th:.3f}c => costs={export_costs}"
                     except Exception as _e:
                         export_costs = True
                         export_costs_calc = f"feedIn err -> costs=True ({_e})" if DEBUG else "feedIn err -> costs=True"
