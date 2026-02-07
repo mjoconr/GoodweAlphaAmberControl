@@ -334,7 +334,7 @@ function render(e) {{
 
 async function init() {{
   const baseLabel = API_BASE && API_BASE.length ? API_BASE : window.location.origin;
-  $('status').textContent = `API ${MODE}: ${{baseLabel}}`;
+  $('status').textContent = `API ${{MODE}}: ${{baseLabel}}`;
 
   try {{
     const r = await fetch(`${{API_BASE}}/api/events/latest`);
@@ -344,7 +344,7 @@ async function init() {{
       render(e);
     }}
   }} catch (e) {{
-    $('status').textContent = `API unreachable ${MODE}: ${{baseLabel}}`;
+    $('status').textContent = `API unreachable ${{MODE}}: ${{baseLabel}}`;
   }}
 
   const es = new EventSource(`${{API_BASE}}/api/sse/events?after_id=${{lastId}}`);
@@ -353,13 +353,13 @@ async function init() {{
       const e = JSON.parse(msg.data);
       lastId = Math.max(lastId, e.id || 0);
       render(e);
-      $('status').textContent = `connected ${MODE} (last id: ${{lastId}})`;
+      $('status').textContent = `connected ${{MODE}} (last id: ${{lastId}})`;
     }} catch (err) {{
       // ignore
     }}
   }});
   es.onerror = () => {{
-    $('status').textContent = `disconnected ${MODE} — retrying…`;
+    $('status').textContent = `disconnected ${{MODE}} — retrying…`;
   }};
 }}
 
