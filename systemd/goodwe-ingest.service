@@ -1,0 +1,15 @@
+[Unit]
+Description=GoodWe event ingester (JSON -> SQLite)
+After=goodwe-control.service
+Wants=goodwe-control.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/goodwe_local_control
+EnvironmentFile=/home/pi/goodwe_local_control/.env
+ExecStart=/home/pi/goodwe_local_control/.venv/bin/python /home/pi/goodwe_local_control/ingest_to_sqlite.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=goodwe-stack.target

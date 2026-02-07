@@ -1,0 +1,16 @@
+[Unit]
+Description=GoodWe control loop (Amber + AlphaESS guard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these paths to match your install
+WorkingDirectory=/home/pi/goodwe_local_control
+EnvironmentFile=/home/pi/goodwe_local_control/.env
+ExecStart=/home/pi/goodwe_local_control/.venv/bin/python /home/pi/goodwe_local_control/control.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=goodwe-stack.target

@@ -1,0 +1,3 @@
+[Unit]
+Description=GoodWe control stack (control + ingest + api + ui)
+Wants=goodwe-control.service goodwe-ingest.service goodwe-api.service goodwe-ui.service

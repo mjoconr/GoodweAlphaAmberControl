@@ -1,0 +1,15 @@
+[Unit]
+Description=GoodWe events API (CRUD + SSE)
+After=goodwe-ingest.service
+Wants=goodwe-ingest.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/goodwe_local_control
+EnvironmentFile=/home/pi/goodwe_local_control/.env
+ExecStart=/home/pi/goodwe_local_control/.venv/bin/python /home/pi/goodwe_local_control/api_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=goodwe-stack.target

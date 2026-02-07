@@ -1,0 +1,15 @@
+[Unit]
+Description=GoodWe live UI
+After=goodwe-api.service
+Wants=goodwe-api.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/goodwe_local_control
+EnvironmentFile=/home/pi/goodwe_local_control/.env
+ExecStart=/home/pi/goodwe_local_control/.venv/bin/python /home/pi/goodwe_local_control/ui_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=goodwe-stack.target
