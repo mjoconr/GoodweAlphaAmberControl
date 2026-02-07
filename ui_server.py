@@ -833,7 +833,23 @@ _REACT_APP_JS = r"""(function() {
     return { minY: minY - pad, maxY: maxY + pad };
   }
 
-  function LineChart(props) {
+  function computeXRange(seriesList) {
+    var minX = Infinity, maxX = -Infinity;
+    for (var s = 0; s < seriesList.length; s++) {
+      var pts = seriesList[s].points;
+      for (var i = 0; i < pts.length; i++) {
+        var x = pts[i][0];
+        if (x === null || x === undefined || isNaN(x)) continue;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+    }
+    if (minX === Infinity) { minX = 0; maxX = 1; }
+    if (minX === maxX) { minX -= 1; maxX += 1; }
+    return { minX: minX, maxX: maxX };
+  }
+
+function LineChart(props) {
     var title = props.title;
     var subtitle = props.subtitle;
     var series = props.series;
@@ -843,6 +859,7 @@ _REACT_APP_JS = r"""(function() {
     var yLines = props.yLines || []; // [{y,label,kind}]
     var yUnit = props.yUnit || '';
     var initialEnabled = props.initialEnabled || null;
+    var markers = props.markers || []; // [{ts,label,kind}]
 
     var enabled0 = {};
     for (var i = 0; i < series.length; i++) enabled0[series[i].key] = true;
@@ -851,9 +868,22 @@ _REACT_APP_JS = r"""(function() {
     }
 
     var _a = useState(enabled0), enabled = _a[0], setEnabled = _a[1];
-    var _b = useState(null), hover = _b[0], setHover = _b[1];
+    var _b = useState(null), hoverTs = _b[0], setHoverTs = _b[1];
 
     var boxRef = useRef(null);
+
+    function nearestPoint(points, targetTs) {
+      if (!points || !points.length) return null;
+      var lo = 0, hi = points.length - 1;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (points[mid][0] < targetTs) lo = mid + 1;
+        else hi = mid;
+      }
+      var idx = lo;
+      if (idx > 0 && Math.abs(points[idx - 1][0] - targetTs) <= Math.abs(points[idx][0] - targetTs)) idx--;
+      return points[idx];
+    }
 
     var decimated = useMemo(function() {
       var out = [];
@@ -866,38 +896,41 @@ _REACT_APP_JS = r"""(function() {
     }, [series, enabled, maxPoints]);
 
     var range = useMemo(function() { return computeRange(decimated); }, [decimated]);
+    var xRange = useMemo(function() { return computeXRange(decimated); }, [decimated]);
 
-    function xOf(i, n) {
-      if (n <= 1) return 0;
-      return (i / (n - 1)) * 1000.0;
+    function xOfTs(ts) {
+      var den = (xRange.maxX - xRange.minX) || 1;
+      var t = (ts - xRange.minX) / den;
+      return clamp(t, 0, 1) * 1000.0;
     }
+
     function yOf(y) {
       var t = (y - range.minY) / (range.maxY - range.minY);
       t = 1.0 - t;
       return clamp(t, 0, 1) * (height - 20) + 10; // padding
     }
 
-    // pick hover index from the first enabled series (all series share timestamps per event)
     function onMove(ev) {
       var el = boxRef.current;
       if (!el) return;
       var rect = el.getBoundingClientRect();
       var x = ev.clientX - rect.left;
       var w = rect.width || 1;
-      var n = (decimated.length ? decimated[0].points.length : 0);
-      if (n <= 0) { setHover(null); return; }
-      var idx = Math.round(clamp(x / w, 0, 1) * (n - 1));
-      setHover(idx);
+      var t = clamp(x / w, 0, 1);
+      var targetTs = xRange.minX + t * (xRange.maxX - xRange.minX);
+      if (!decimated.length || !decimated[0].points.length) { setHoverTs(null); return; }
+      var anchor = nearestPoint(decimated[0].points, targetTs);
+      setHoverTs(anchor ? anchor[0] : targetTs);
     }
 
-    function onLeave() { setHover(null); }
+    function onLeave() { setHoverTs(null); }
 
     var paths = [];
     for (var s = 0; s < decimated.length; s++) {
       var pts = decimated[s].points;
       var p = '';
       for (var i = 0; i < pts.length; i++) {
-        var x = xOf(i, pts.length);
+        var x = xOfTs(pts[i][0]);
         var y = yOf(pts[i][1]);
         p += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
       }
@@ -930,22 +963,53 @@ _REACT_APP_JS = r"""(function() {
       }
     }
 
+    var markerEls = [];
+    if (markers && markers.length) {
+      for (var m = 0; m < markers.length; m++) {
+        var mk = markers[m];
+        if (!mk || mk.ts === null || mk.ts === undefined || isNaN(mk.ts)) continue;
+        if (mk.ts < xRange.minX || mk.ts > xRange.maxX) continue;
+        var mx = xOfTs(mk.ts);
+        var mcol = (mk.kind === 'bad') ? 'rgba(248,81,73,0.65)' : (mk.kind === 'warn') ? 'rgba(245,159,0,0.55)' : 'rgba(63,185,80,0.55)';
+        var titleText = tsLabel(mk.ts) + '  ' + String(mk.label || 'event');
+        markerEls.push(
+          e('line', { key: 'm_' + m, x1: mx, y1: 0, x2: mx, y2: height, stroke: mcol, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' },
+            e('title', null, titleText)
+          )
+        );
+        markerEls.push(
+          e('circle', { key: 'mc_' + m, cx: mx, cy: 10, r: 2.2, fill: mcol, stroke: 'rgba(0,0,0,0.0)' },
+            e('title', null, titleText)
+          )
+        );
+      }
+    }
+
     var hoverLine = null;
     var tooltip = null;
-    if (hover !== null && decimated.length) {
-      var n0 = decimated[0].points.length;
-      if (hover >= 0 && hover < n0) {
-        var hx = xOf(hover, n0);
-        hoverLine = e('line', { x1: hx, y1: 0, x2: hx, y2: height, stroke: 'rgba(255,255,255,0.20)', strokeWidth: 1, vectorEffect: 'non-scaling-stroke' });
+    if (hoverTs !== null && decimated.length) {
+      var hx = xOfTs(hoverTs);
+      hoverLine = e('line', { x1: hx, y1: 0, x2: hx, y2: height, stroke: 'rgba(255,255,255,0.20)', strokeWidth: 1, vectorEffect: 'non-scaling-stroke' });
 
-        var ts = decimated[0].points[hover][0];
-        var lines = [tsLabel(ts)];
-        for (var s2 = 0; s2 < decimated.length; s2++) {
-          var val = decimated[s2].points[hover][1];
-          lines.push(decimated[s2].name + ': ' + fmt(val, yUnit));
-        }
-        tooltip = e('div', { className: 'tooltip muted' }, lines.join('\\n'));
+      var lines = [tsLabel(hoverTs)];
+      for (var s2 = 0; s2 < decimated.length; s2++) {
+        var np = nearestPoint(decimated[s2].points, hoverTs);
+        var val = np ? np[1] : null;
+        lines.push(decimated[s2].name + ': ' + fmt(val, yUnit));
       }
+
+      // include any markers at (roughly) this timestamp
+      if (markers && markers.length) {
+        var near = [];
+        for (var mm = 0; mm < markers.length; mm++) {
+          var mk2 = markers[mm];
+          if (!mk2 || mk2.ts === null || mk2.ts === undefined) continue;
+          if (Math.abs(mk2.ts - hoverTs) <= 1500) near.push(String(mk2.label || 'event'));
+        }
+        if (near.length) lines.push('events: ' + near.slice(0, 3).join(' | ') + (near.length > 3 ? '…' : ''));
+      }
+
+      tooltip = e('div', { className: 'tooltip muted' }, lines.join('\n'));
     }
 
     var legendItems = [];
@@ -987,6 +1051,7 @@ _REACT_APP_JS = r"""(function() {
           e('g', null,
             zeroLine,
             yLineEls,
+            markerEls,
             paths,
             hoverLine
           )
@@ -996,7 +1061,7 @@ _REACT_APP_JS = r"""(function() {
     );
   }
 
-  function EventTable(props) {
+function EventTable(props) {
     var events = props.events || [];
     return e('div', { className: 'card' },
       e('h2', null, 'Recent events (debug)'),
@@ -1039,6 +1104,7 @@ _REACT_APP_JS = r"""(function() {
     var _e = useState([]), ticker = _e[0], setTicker = _e[1];
     var _f = useState('15m'), range = _f[0], setRange = _f[1];
     var _g = useState(false), showDebug = _g[0], setShowDebug = _g[1];
+    var _h = useState(true), showMarkers = _h[0], setShowMarkers = _h[1];
 
     var esRef = useRef(null);
     var lastIdRef = useRef(0);
@@ -1359,12 +1425,66 @@ _REACT_APP_JS = r"""(function() {
       var yLines = [];
       if (threshold !== null && threshold !== undefined) yLines.push({ y: Number(threshold), label: 'thresh ' + String(threshold) + 'c', kind: 'warn' });
 
+      function evTs(ev) {
+        var ts = get(ev, ['ts_epoch_ms'], null);
+        if (!ts) ts = get(get(ev, ['data'], {}), ['ts_epoch_ms'], null);
+        return ts ? Number(ts) : null;
+      }
+
+      function sev(kind) { return (kind === 'bad') ? 2 : (kind === 'warn') ? 1 : 0; }
+      var markerMap = {};
+
+      function mergeMarker(ts, kind, label) {
+        if (!ts) return;
+        var key = String(Math.round(ts));
+        var cur = markerMap[key];
+        if (!cur) {
+          markerMap[key] = { ts: ts, kind: kind || 'warn', label: label || 'event' };
+          return;
+        }
+        if (sev(kind) > sev(cur.kind)) cur.kind = kind;
+        // combine labels if different
+        if (label && cur.label.indexOf(label) === -1) cur.label += ' | ' + label;
+      }
+
+      for (var mi = 0; mi < viewEvents.length; mi++) {
+        var evm = viewEvents[mi];
+        var tsM = evTs(evm);
+        if (!tsM) continue;
+
+        var dM = evm.data || {};
+        var decM = get(dM, ['decision'], {}) || {};
+        var actM = get(dM, ['actuation'], {}) || {};
+
+        if (mi > 0) {
+          var prev = viewEvents[mi - 1];
+          var pd = prev.data || {};
+          var pdec = get(pd, ['decision'], {}) || {};
+
+          if (String(pdec.reason) !== String(decM.reason) && decM.reason) {
+            mergeMarker(tsM, 'warn', 'reason → ' + String(decM.reason));
+          }
+          if (String(!!pdec.export_costs) !== String(!!decM.export_costs)) {
+            mergeMarker(tsM, decM.export_costs ? 'bad' : 'ok', 'export_costs → ' + String(!!decM.export_costs));
+          }
+        }
+
+        if (actM.write_attempted) {
+          if (actM.write_ok) mergeMarker(tsM, 'ok', 'write OK');
+          else if (actM.write_error) mergeMarker(tsM, 'bad', 'write FAILED: ' + String(actM.write_error));
+          else mergeMarker(tsM, 'warn', 'write attempt');
+        }
+      }
+
+      var markers = Object.keys(markerMap).map(function(k) { return markerMap[k]; }).sort(function(a,b) { return a.ts - b.ts; });
+
       return e('div', { style: { display: 'grid', gap: '12px' } },
         e(LineChart, {
           title: 'Power flows',
           subtitle: 'GoodWe gen, Alpha load/grid/battery (' + range + ' view)',
           yUnit: 'W',
           showZero: true,
+          markers: showMarkers ? markers : [],
           series: [
             { key: 'gen', name: 'gen_w', color: 'rgba(88,166,255,0.85)', points: powerGen },
             { key: 'load', name: 'pload_w', color: 'rgba(167,231,131,0.85)', points: powerLoad },
@@ -1378,6 +1498,7 @@ _REACT_APP_JS = r"""(function() {
           yUnit: 'c',
           showZero: true,
           yLines: yLines,
+          markers: showMarkers ? markers : [],
           series: [
             { key: 'import', name: 'import_c', color: 'rgba(167,231,131,0.85)', points: priceImport },
             { key: 'feed', name: 'feedin_c', color: 'rgba(88,166,255,0.85)', points: priceFeed },
@@ -1388,13 +1509,14 @@ _REACT_APP_JS = r"""(function() {
           subtitle: 'want_pct vs GoodWe readback pct (' + range + ' view)',
           yUnit: '%',
           showZero: false,
+          markers: showMarkers ? markers : [],
           series: [
             { key: 'want', name: 'want_pct', color: 'rgba(245,159,0,0.85)', points: wantPct },
             { key: 'actual', name: 'actual_pct', color: 'rgba(88,166,255,0.85)', points: actualPct },
           ]
         })
       );
-    }, [viewEvents, range]);
+    }, [viewEvents, range, showMarkers]);
 
     return e('div', null,
       err ? e('div', { className: 'err' }, e('pre', null, String(err))) : null,
@@ -1412,6 +1534,10 @@ _REACT_APP_JS = r"""(function() {
             e('option', { value: '24h' }, '24h')
           ),
           e('button', { className: 'btn', onClick: function() { setShowDebug(!showDebug); } }, showDebug ? 'Hide debug' : 'Show debug'),
+          e('label', { className: 'muted', style: { fontSize: '12px', display:'flex', gap:'6px', alignItems:'center' } },
+            e('input', { type:'checkbox', checked: !!showMarkers, onChange: function(ev) { setShowMarkers(!!ev.target.checked); } }),
+            e('span', null, 'Event markers')
+          ),
           e('span', { className: 'muted', style: { fontSize: '12px' } }, 'events in view: ' + String(viewEvents.length))
         )
       ),
@@ -1463,6 +1589,308 @@ _REACT_APP_JS = r"""(function() {
   }
 })();"""
 
+
+
+
+
+_CHARTJS_HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <title>GoodWe Control - Chart.js</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #0f1723;
+      --border: #202938;
+      --text: #e6edf3;
+      --muted: rgba(230,237,243,0.72);
+    }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    header { padding: 12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items: baseline; gap: 12px; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header .status { font-size: 12px; opacity: 0.85; }
+    header .build { margin-left: auto; opacity: 0.55; font-size: 11px; }
+    main { padding: 16px; display: grid; gap: 12px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .row { display:flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .btn { border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); border-radius: 8px; padding: 6px 10px; cursor:pointer; font-size: 12px; text-decoration:none; }
+    .btn:hover { background: rgba(255,255,255,0.04); }
+    .sel { border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); border-radius: 8px; padding: 6px 10px; font-size: 12px; }
+    .muted { color: var(--muted); }
+    canvas { width: 100% !important; height: 280px !important; }
+    pre { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: pre; max-height: 160px; overflow:auto; }
+  </style>
+</head>
+<body data-build="__BUILD__">
+  <header>
+    <h1>GoodWe Control - Chart.js</h1>
+    <div class="status" id="status">loading…</div>
+    <div class="build">build: __BUILD__</div>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div>
+          <div class="muted" style="font-size:12px;">Mode: __MODE__</div>
+          <div class="muted" style="font-size:12px;">DB: __DB_PATH__</div>
+        </div>
+        <div class="row">
+          <a class="btn" href="/">Classic UI</a>
+          <a class="btn" href="/react">React UI</a>
+          <span class="muted" style="font-size:12px;">Plain HTML + Chart.js example (no build step)</span>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:8px;">
+        <span class="muted" style="font-size:12px;">View:</span>
+        <select id="range" class="sel">
+          <option value="15m">15m</option>
+          <option value="1h">1h</option>
+          <option value="6h">6h</option>
+          <option value="24h">24h</option>
+        </select>
+        <span class="muted" style="font-size:12px;">(auto-updates via SSE)</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:13px; margin:0 0 8px; opacity:0.9;">Power flows</h2>
+      <canvas id="powerChart"></canvas>
+      <div class="muted" style="font-size:12px; margin-top:6px;">gen_w, pload_w, pgrid_w, pbat_w</div>
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:13px; margin:0 0 8px; opacity:0.9;">Change log (example)</h2>
+      <pre id="log">—</pre>
+    </div>
+
+    <!-- Chart.js from CDN (example). If you need offline use, we can vendor it locally. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="/chartjs_app.js?v=__BUILD__"></script>
+  </main>
+</body>
+</html>
+"""
+
+
+_CHARTJS_APP_JS = r"""(function() {
+  if (!window.Chart) {
+    var st = document.getElementById('status');
+    if (st) st.textContent = 'Chart.js not available (CDN blocked?)';
+    return;
+  }
+
+  function $(id) { return document.getElementById(id); }
+
+  function tsLabel(ms) {
+    if (!ms) return '—';
+    try { return new Date(ms).toLocaleTimeString(); }
+    catch (_) { return String(ms); }
+  }
+
+  function logLine(s) {
+    var el = $('log');
+    if (!el) return;
+    if (el.textContent === '—') el.textContent = '';
+    el.textContent += tsLabel(Date.now()) + '  ' + s + '\\n';
+    el.scrollTop = el.scrollHeight;
+    // cap log
+    var lines = el.textContent.split('\\n');
+    if (lines.length > 120) el.textContent = lines.slice(lines.length - 120).join('\\n');
+  }
+
+  function get(obj, path, def) {
+    try {
+      var cur = obj;
+      for (var i = 0; i < path.length; i++) {
+        if (cur === null || cur === undefined) return def;
+        cur = cur[path[i]];
+      }
+      return (cur === undefined) ? def : cur;
+    } catch (_) { return def; }
+  }
+
+  function evTs(ev) {
+    var ts = get(ev, ['ts_epoch_ms'], null);
+    if (!ts) ts = get(get(ev, ['data'], {}), ['ts_epoch_ms'], null);
+    return ts ? Number(ts) : null;
+  }
+
+  function extract(ev) {
+    var d = ev.data || {};
+    return {
+      ts: evTs(ev),
+      gen: get(d, ['sources','goodwe','gen_w'], null),
+      load: get(d, ['sources','alpha','pload_w'], null),
+      grid: get(d, ['sources','alpha','pgrid_w'], null),
+      bat: get(d, ['sources','alpha','pbat_w'], null),
+      reason: get(d, ['decision','reason'], null),
+      id: ev.id || 0
+    };
+  }
+
+  function fetchJSON(url) {
+    return fetch(url, { cache: 'no-store' }).then(function(r) {
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    });
+  }
+
+  var ctx = $('powerChart').getContext('2d');
+  var powerChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      datasets: [
+        { label: 'gen_w', data: [], parsing: false },
+        { label: 'pload_w', data: [], parsing: false },
+        { label: 'pgrid_w', data: [], parsing: false },
+        { label: 'pbat_w', data: [], parsing: false },
+      ]
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { display: true, labels: { color: '#e6edf3' } },
+        tooltip: {
+          callbacks: {
+            title: function(items) {
+              if (!items || !items.length) return '';
+              return tsLabel(items[0].parsed.x);
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'linear',
+          ticks: {
+            color: 'rgba(230,237,243,0.72)',
+            callback: function(v) { return tsLabel(v); },
+            maxTicksLimit: 8
+          },
+          grid: { color: 'rgba(255,255,255,0.07)' }
+        },
+        y: {
+          ticks: { color: 'rgba(230,237,243,0.72)' },
+          grid: { color: 'rgba(255,255,255,0.07)' }
+        }
+      }
+    }
+  });
+
+  var lastId = 0;
+  var es = null;
+  var prevReason = null;
+
+  function windowMs() {
+    var sel = $('range');
+    var v = sel ? sel.value : '15m';
+    if (v === '1h') return 60 * 60 * 1000;
+    if (v === '6h') return 6 * 60 * 60 * 1000;
+    if (v === '24h') return 24 * 60 * 60 * 1000;
+    return 15 * 60 * 1000;
+  }
+
+  function prune() {
+    var w = windowMs();
+    var now = Date.now();
+    var minX = now - w;
+    for (var i = 0; i < powerChart.data.datasets.length; i++) {
+      var ds = powerChart.data.datasets[i];
+      while (ds.data.length && ds.data[0].x < minX) ds.data.shift();
+    }
+  }
+
+  function addPoint(ts, vals) {
+    if (!ts) return;
+    powerChart.data.datasets[0].data.push({ x: ts, y: Number(vals.gen) });
+    powerChart.data.datasets[1].data.push({ x: ts, y: Number(vals.load) });
+    powerChart.data.datasets[2].data.push({ x: ts, y: Number(vals.grid) });
+    powerChart.data.datasets[3].data.push({ x: ts, y: Number(vals.bat) });
+    prune();
+    powerChart.update('none');
+  }
+
+  function setStatus(s) {
+    var st = $('status');
+    if (st) st.textContent = s;
+  }
+
+  function connectSSE() {
+    if (es) { try { es.close(); } catch (_) {} es = null; }
+    var url = '/api/sse/events?after_id=' + String(lastId);
+    setStatus('connecting SSE (after_id=' + String(lastId) + ')');
+    logLine('SSE connect ' + url);
+
+    try { es = new EventSource(url); }
+    catch (e2) { setStatus('EventSource failed: ' + e2); logLine('EventSource failed: ' + e2); return; }
+
+    es.addEventListener('event', function(msg) {
+      try {
+        var ev = JSON.parse(msg.data);
+        var x = extract(ev);
+        if (x.id) lastId = Math.max(lastId, x.id);
+        if (x.ts) addPoint(x.ts, x);
+
+        if (x.reason && x.reason !== prevReason) {
+          logLine('reason → ' + x.reason);
+          prevReason = x.reason;
+        }
+
+        setStatus('connected (last id ' + String(lastId) + ')');
+      } catch (e3) {
+        logLine('SSE parse error: ' + e3);
+      }
+    });
+
+    es.onerror = function() {
+      setStatus('SSE disconnected - retrying…');
+      logLine('SSE disconnected - retrying…');
+      try { es.close(); } catch (_) {}
+      es = null;
+      setTimeout(connectSSE, 2000);
+    };
+  }
+
+  function boot() {
+    setStatus('loading latest…');
+    fetchJSON('/api/events/latest').then(function(lat) {
+      var x = extract(lat);
+      lastId = x.id || 0;
+      prevReason = x.reason;
+      setStatus('loading history…');
+
+      var historyN = 800;
+      var afterId = Math.max(0, lastId - historyN);
+      return fetchJSON('/api/events?after_id=' + String(afterId) + '&limit=' + String(historyN));
+    }).then(function(res) {
+      if (res && res.events) {
+        for (var i = 0; i < res.events.length; i++) {
+          var x = extract(res.events[i]);
+          if (x.id) lastId = Math.max(lastId, x.id);
+          if (x.ts) addPoint(x.ts, x);
+        }
+      }
+      setStatus('api ok (latest id ' + String(lastId) + ') - connecting SSE…');
+      connectSSE();
+    }).catch(function(e2) {
+      setStatus('boot failed: ' + e2);
+      logLine('boot failed: ' + e2);
+    });
+
+    var sel = $('range');
+    if (sel) sel.addEventListener('change', function() { prune(); powerChart.update('none'); });
+  }
+
+  boot();
+})();"""
 
 
 @app.get("/js_ping")
@@ -1566,6 +1994,26 @@ def react_app_js() -> Response:
 
 
 
+
+
+@app.get("/chartjs", response_class=HTMLResponse)
+def chartjs_index(request: Request) -> HTMLResponse:
+    # Plain HTML + Chart.js example UI (auto-updates via SSE).
+    mode = "proxied" if UI_PROXY_API else "direct"
+    html_doc = _CHARTJS_HTML_TEMPLATE
+    html_doc = html_doc.replace("__BUILD__", BUILD_ID)
+    html_doc = html_doc.replace("__MODE__", mode)
+    html_doc = html_doc.replace("__DB_PATH__", _html_escape(DB_PATH))
+    return HTMLResponse(content=html_doc, headers={"cache-control": "no-store"})
+
+
+@app.get("/chartjs_app.js")
+def chartjs_app_js() -> Response:
+    return Response(
+        content=_CHARTJS_APP_JS,
+        media_type="application/javascript; charset=utf-8",
+        headers={"cache-control": "no-store"},
+    )
 
 @app.get("/app.js")
 def app_js() -> Response:
