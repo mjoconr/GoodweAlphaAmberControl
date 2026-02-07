@@ -1,4 +1,3 @@
-````markdown
 # GoodWe + Amber + AlphaESS export-cost guard
 
 This project controls a **GoodWe GW5000-DNS-30** (Modbus-TCP) using:
