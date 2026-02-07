@@ -201,7 +201,7 @@ def index() -> str:
 <body>
   <header>
     <h1>GoodWe Control — Live</h1>
-    <div class="status" id="status">connecting…</div>
+    <div class="status" id="status">connecting...</div>
   </header>
 
   <main>
@@ -317,7 +317,7 @@ function appendLog(line) {{
 
 function addRow(e) {{
   const d = e.data || {{}};
-  const amber = d.sources?.amber || {{}};
+  const amber = (d.sources && d.sources.amber) || {{}};
   const dec = d.decision || {{}};
   const tr = document.createElement('tr');
   tr.innerHTML = `
@@ -336,9 +336,9 @@ function addRow(e) {{
 function render(e) {{
   // Accept both older and newer event shapes.
   const d = e.data || {{}};
-  const amber = d.sources?.amber || {{}};
-  const alpha = d.sources?.alpha || {{}};
-  const gw = d.sources?.goodwe || {{}};
+  const amber = (d.sources && d.sources.amber) || {{}};
+  const alpha = (d.sources && d.sources.alpha) || {{}};
+  const gw = (d.sources && d.sources.goodwe) || {{}};
 
   // decision may exist nested (preferred), otherwise fall back to top-level.
   const dec = d.decision || {{
