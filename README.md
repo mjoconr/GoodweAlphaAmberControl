@@ -251,15 +251,15 @@ python3 ui_server.py
 Then open:
 
 - UI: `http://<pi-ip>:8000/`
-- API health: `http://127.0.0.1:8001/api/health`
+  - By default the UI server **reverse-proxies** `/api/*` to the API on `127.0.0.1:8001`, so your browser stays same-origin (no CORS, and no 127.0.0.1 pitfall).
+- API health (from the Pi): `http://127.0.0.1:8001/api/health`
+  - To expose the API on your LAN: set `API_HOST=0.0.0.0` and (if the browser connects directly) set `UI_PROXY_API=0`, `UI_API_BASE=http://<pi-ip>:8001`, and `API_CORS_ORIGINS=http://<pi-ip>:8000`.
 
 ### Notes
 
 - **Atomic export**: `control.py` writes `*.json.tmp` then renames to `*.json`, so the ingest process never sees partial files.
 - **Idempotent import**: events have `event_id` and SQLite enforces uniqueness so re-running the ingester is safe.
-- **SQLite WAL mode**: while the ingester is running, SQLite writes new pages into `events.sqlite3-wal` and may not immediately grow `events.sqlite3`. This is normal. The ingester periodically checkpoints/truncates the WAL so the main DB stays up to date and the WAL stays bounded.
-  - To force it manually: `sqlite3 data/events.sqlite3 "PRAGMA wal_checkpoint(TRUNCATE);"`
-- **CORS**: if the UI and API are on different origins (host/port), set `API_CORS_ORIGINS`.
+- **CORS**: only required when `UI_PROXY_API=0` (browser connects directly to the API on a different origin).
 
 ---
 

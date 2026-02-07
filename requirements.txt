@@ -20,3 +20,4 @@ voluptuous
 yarl
 fastapi
 uvicorn
+httpx

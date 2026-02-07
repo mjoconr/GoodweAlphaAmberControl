@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Dict, Iterable, Optional
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 
 def _env(name: str, default: str = "") -> str:
@@ -23,14 +24,136 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-API_BASE = _env("UI_API_BASE", "http://127.0.0.1:8001")
+def _env_bool(name: str, default: str = "0") -> bool:
+    v = _env(name, default).strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
+
+
+# Upstream API location (used by the optional reverse-proxy).
+# Defaults to localhost because api_server.py defaults to API_HOST=127.0.0.1.
+API_UPSTREAM = _env("UI_API_UPSTREAM", _env("UI_API_BASE", "http://127.0.0.1:8001"))
+
+# If enabled, the UI server reverse-proxies /api/* to API_UPSTREAM.
+# This avoids the common pitfall where the browser tries to connect to 127.0.0.1 (its own machine).
+UI_PROXY_API = _env_bool("UI_PROXY_API", "1")
 
 app = FastAPI(title="GoodWe Control UI")
 
 
+# -------------------------
+# Reverse proxy (optional)
+# -------------------------
+
+_httpx_client = None  # created lazily on first request
+
+
+def _hop_by_hop_headers() -> set:
+    # RFC 7230 hop-by-hop headers must not be forwarded.
+    return {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+    }
+
+
+def _filter_headers(headers: Iterable[tuple[str, str]]) -> Dict[str, str]:
+    bad = _hop_by_hop_headers()
+    out: Dict[str, str] = {}
+    for k, v in headers:
+        lk = k.lower()
+        if lk in bad:
+            continue
+        out[k] = v
+    return out
+
+
+async def _get_httpx():
+    global _httpx_client
+    if _httpx_client is None:
+        import httpx
+
+        # No hard-coded timeout: SSE streams should be long-lived.
+        _httpx_client = httpx.AsyncClient(timeout=None)
+    return _httpx_client
+
+
+@app.on_event("shutdown")
+async def _shutdown_httpx() -> None:
+    global _httpx_client
+    if _httpx_client is not None:
+        try:
+            await _httpx_client.aclose()
+        finally:
+            _httpx_client = None
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])  # type: ignore[misc]
+async def proxy_api(path: str, request: Request) -> Response:
+    """Reverse-proxy /api/* to the upstream API.
+
+    This keeps the browser on the same origin as the UI, avoiding CORS + 127.0.0.1 pitfalls.
+
+    Disable with UI_PROXY_API=0 if you want the browser to connect directly to api_server.
+    """
+
+    if not UI_PROXY_API:
+        return Response(status_code=404, content=b"UI_PROXY_API disabled")
+
+    upstream = API_UPSTREAM.rstrip("/")
+    url = f"{upstream}/api/{path}"
+
+    client = await _get_httpx()
+
+    # Forward query params and body.
+    body = await request.body()
+    headers = _filter_headers(request.headers.items())
+
+    # Best-effort: preserve Accept so SSE keeps correct content type.
+    try:
+        async with client.stream(
+            request.method,
+            url,
+            params=dict(request.query_params),
+            content=body if body else None,
+            headers=headers,
+        ) as resp:
+            resp_headers = _filter_headers(resp.headers.items())
+
+            # NOTE: do not set content-length when streaming.
+            resp_headers.pop("content-length", None)
+
+            media_type = resp.headers.get("content-type")
+
+            return StreamingResponse(
+                resp.aiter_bytes(),
+                status_code=resp.status_code,
+                headers=resp_headers,
+                media_type=media_type,
+            )
+    except Exception as e:
+        return Response(status_code=502, content=f"Upstream API error: {e}".encode("utf-8"))
+
+
+# -------------------------
+# UI page
+# -------------------------
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
-    api_base_js = json.dumps(API_BASE)
+    # If we are proxying, the browser should use relative paths (same origin).
+    # Otherwise, it should connect directly to UI_API_BASE.
+    api_base_for_browser = "" if UI_PROXY_API else _env("UI_API_BASE", "")
+    api_base_js = json.dumps(api_base_for_browser)
+
+    proxy_banner = "(proxied)" if UI_PROXY_API else "(direct)"
+
     return f"""<!doctype html>
 <html lang=\"en\">
 <head>
@@ -136,6 +259,7 @@ def index() -> str:
 
 <script>
 const API_BASE = {api_base_js};
+const MODE = {json.dumps(proxy_banner)};
 const $ = (id) => document.getElementById(id);
 let lastId = 0;
 
@@ -170,7 +294,6 @@ function addRow(e) {{
   `;
   const rows = $('rows');
   rows.prepend(tr);
-  // keep table bounded
   while (rows.children.length > 50) rows.removeChild(rows.lastChild);
 }}
 
@@ -210,7 +333,9 @@ function render(e) {{
 }}
 
 async function init() {{
-  $('status').textContent = `API: ${{API_BASE}}`;
+  const baseLabel = API_BASE && API_BASE.length ? API_BASE : window.location.origin;
+  $('status').textContent = `API ${MODE}: ${{baseLabel}}`;
+
   try {{
     const r = await fetch(`${{API_BASE}}/api/events/latest`);
     if (r.ok) {{
@@ -219,7 +344,7 @@ async function init() {{
       render(e);
     }}
   }} catch (e) {{
-    $('status').textContent = `API unreachable: ${{API_BASE}}`;
+    $('status').textContent = `API unreachable ${MODE}: ${{baseLabel}}`;
   }}
 
   const es = new EventSource(`${{API_BASE}}/api/sse/events?after_id=${{lastId}}`);
@@ -228,13 +353,13 @@ async function init() {{
       const e = JSON.parse(msg.data);
       lastId = Math.max(lastId, e.id || 0);
       render(e);
-      $('status').textContent = `connected (last id: ${{lastId}})`;
+      $('status').textContent = `connected ${MODE} (last id: ${{lastId}})`;
     }} catch (err) {{
       // ignore
     }}
   }});
   es.onerror = () => {{
-    $('status').textContent = 'disconnected — retrying…';
+    $('status').textContent = `disconnected ${MODE} — retrying…`;
   }};
 }}
 
