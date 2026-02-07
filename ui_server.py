@@ -633,6 +633,836 @@ function appendLog(line) {
 
   try { init(); } catch (e) { showError('init threw: ' + e); }
 })();"""
+_REACT_HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Cache-Control" content="no-store" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <title>GoodWe Control - React</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #0f1723;
+      --border: #202938;
+      --text: #e6edf3;
+      --muted: rgba(230,237,243,0.72);
+      --bad: rgba(248, 81, 73, 0.95);
+      --warn: rgba(245, 159, 0, 0.95);
+      --ok: rgba(63, 185, 80, 0.95);
+    }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+    header { padding: 12px 16px; border-bottom: 1px solid var(--border); display:flex; align-items: baseline; gap: 12px; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    header .status { font-size: 12px; opacity: 0.85; }
+    header .build { margin-left: auto; opacity: 0.55; font-size: 11px; }
+    main { padding: 16px; display: grid; gap: 12px; }
+    .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+    .card h2 { font-size: 13px; margin: 0 0 8px; opacity: 0.9; }
+    .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 10px; font-size: 13px; }
+    .kv div:nth-child(odd) { opacity: 0.75; }
+    .row { display:flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .btn { border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); border-radius: 8px; padding: 6px 10px; cursor:pointer; font-size: 12px; }
+    .btn:hover { background: rgba(255,255,255,0.04); }
+    .sel { border: 1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text); border-radius: 8px; padding: 6px 10px; font-size: 12px; }
+    .muted { color: var(--muted); }
+    .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); }
+    .pill.ok { border-color: rgba(63,185,80,0.35); color: rgba(63,185,80,0.95); background: rgba(63,185,80,0.07); }
+    .pill.warn { border-color: rgba(245,159,0,0.35); color: rgba(245,159,0,0.95); background: rgba(245,159,0,0.07); }
+    .pill.bad { border-color: rgba(248,81,73,0.35); color: rgba(248,81,73,0.95); background: rgba(248,81,73,0.07); }
+    .chartWrap { display:grid; gap: 8px; }
+    .chartHead { display:flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+    .legend { display:flex; gap: 10px; flex-wrap: wrap; font-size: 12px; opacity: 0.95; }
+    .legend label { display:flex; gap: 6px; align-items:center; cursor:pointer; }
+    .legend .sw { width: 10px; height: 10px; border-radius: 2px; background: rgba(255,255,255,0.35); border: 1px solid rgba(255,255,255,0.15); }
+    .svgBox { width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 10px; background: rgba(0,0,0,0.12); }
+    .tooltip { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: pre; }
+    .ticker { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: pre; max-height: 200px; overflow:auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+    th { opacity: 0.8; font-weight: 600; }
+    .err { border: 1px solid rgba(248,81,73,0.55); background: rgba(248,81,73,0.08); border-radius: 10px; padding: 12px; }
+    .err pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+    a { color: rgba(88,166,255,0.95); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body data-build="__BUILD__" data-mode="__MODE__">
+  <header>
+    <h1>GoodWe Control - React</h1>
+    <div class="status" id="status">loading…</div>
+    <div class="build">build: __BUILD__</div>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div>
+          <div style="font-size:12px; opacity:0.85;">Mode: __MODE__</div>
+          <div style="font-size:12px; opacity:0.85;">DB: __DB_PATH__</div>
+          <div style="font-size:12px; opacity:0.85;">API: __API_UPSTREAM__</div>
+        </div>
+        <div class="row">
+          <a class="btn" href="/">Classic UI</a>
+          <span class="muted" style="font-size:12px;">Experimental React UI (no build step)</span>
+        </div>
+      </div>
+      <div class="muted" style="font-size:12px; margin-top:8px;">
+        Tip: If you don't have internet access on this network, load React from CDN won't work. In that case use the Classic UI (or we can vendor React locally later).
+      </div>
+    </div>
+
+    <div id="root"></div>
+
+    <div id="bootError" class="err" style="display:none;">
+      <h2 style="font-size:13px; margin:0 0 8px; opacity:0.9;">UI error</h2>
+      <pre id="bootErrorText"></pre>
+    </div>
+
+    <script>
+      // Friendly boot error reporting (e.g. CDN blocked)
+      function bootError(msg) {
+        var box = document.getElementById('bootError');
+        var pre = document.getElementById('bootErrorText');
+        if (box && pre) { box.style.display = 'block'; pre.textContent = msg; }
+        var st = document.getElementById('status');
+        if (st) st.textContent = 'boot failed';
+      }
+      window.addEventListener('error', function(e) {
+        bootError('error: ' + e.message + '\\n' + e.filename + ':' + e.lineno + ':' + e.colno);
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        bootError('unhandledrejection: ' + String(e.reason));
+      });
+    </script>
+
+    <!-- React from CDN (no build step). If you prefer, we can vendor these locally later. -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="/react_app.js?v=__BUILD__"></script>
+  </main>
+</body>
+</html>
+"""
+
+
+_REACT_APP_JS = r"""(function() {
+  // React globals are loaded via CDN scripts in /react.
+  if (!window.React || !window.ReactDOM) {
+    var st = document.getElementById('status');
+    if (st) st.textContent = 'React not available (CDN blocked?)';
+    return;
+  }
+
+  var e = React.createElement;
+  var useEffect = React.useEffect;
+  var useMemo = React.useMemo;
+  var useRef = React.useRef;
+  var useState = React.useState;
+
+  function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+
+  function get(obj, path, def) {
+    try {
+      var cur = obj;
+      for (var i = 0; i < path.length; i++) {
+        if (cur === null || cur === undefined) return def;
+        cur = cur[path[i]];
+      }
+      return (cur === undefined) ? def : cur;
+    } catch (_) { return def; }
+  }
+
+  function fmt(x, suf) {
+    if (suf === undefined) suf = '';
+    if (x === null || x === undefined) return '—';
+    return String(x) + suf;
+  }
+
+  function tsLabel(ms) {
+    if (!ms) return '—';
+    try { return new Date(ms).toLocaleTimeString(); }
+    catch (_) { return String(ms); }
+  }
+
+  function fetchJSON(url) {
+    return fetch(url, { cache: 'no-store' }).then(function(r) {
+      if (!r.ok) throw new Error(r.status + ' ' + r.statusText);
+      return r.json();
+    });
+  }
+
+  function buildPill(kind, text) {
+    return e('span', { className: 'pill ' + kind }, text);
+  }
+
+  function uniqPush(arr, item, maxLen) {
+    var out = arr.slice();
+    out.unshift(item);
+    if (out.length > maxLen) out.length = maxLen;
+    return out;
+  }
+
+  function decimate(points, maxN) {
+    if (!points || points.length <= maxN) return points;
+    var step = points.length / maxN;
+    var out = [];
+    for (var i = 0; i < maxN; i++) {
+      out.push(points[Math.floor(i * step)]);
+    }
+    return out;
+  }
+
+  function computeRange(seriesList) {
+    var minY = Infinity, maxY = -Infinity;
+    for (var s = 0; s < seriesList.length; s++) {
+      var pts = seriesList[s].points;
+      for (var i = 0; i < pts.length; i++) {
+        var y = pts[i][1];
+        if (y === null || y === undefined || isNaN(y)) continue;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (minY === Infinity) { minY = 0; maxY = 1; }
+    if (minY === maxY) { minY -= 1; maxY += 1; }
+    // Pad range slightly
+    var pad = (maxY - minY) * 0.08;
+    return { minY: minY - pad, maxY: maxY + pad };
+  }
+
+  function LineChart(props) {
+    var title = props.title;
+    var subtitle = props.subtitle;
+    var series = props.series;
+    var height = props.height || 220;
+    var maxPoints = props.maxPoints || 600;
+    var showZero = props.showZero || false;
+    var yLines = props.yLines || []; // [{y,label,kind}]
+    var yUnit = props.yUnit || '';
+    var initialEnabled = props.initialEnabled || null;
+
+    var enabled0 = {};
+    for (var i = 0; i < series.length; i++) enabled0[series[i].key] = true;
+    if (initialEnabled) {
+      for (var k in enabled0) enabled0[k] = !!initialEnabled[k];
+    }
+
+    var _a = useState(enabled0), enabled = _a[0], setEnabled = _a[1];
+    var _b = useState(null), hover = _b[0], setHover = _b[1];
+
+    var boxRef = useRef(null);
+
+    var decimated = useMemo(function() {
+      var out = [];
+      for (var i = 0; i < series.length; i++) {
+        var s = series[i];
+        if (!enabled[s.key]) continue;
+        out.push({ key: s.key, name: s.name, color: s.color, points: decimate(s.points, maxPoints) });
+      }
+      return out;
+    }, [series, enabled, maxPoints]);
+
+    var range = useMemo(function() { return computeRange(decimated); }, [decimated]);
+
+    function xOf(i, n) {
+      if (n <= 1) return 0;
+      return (i / (n - 1)) * 1000.0;
+    }
+    function yOf(y) {
+      var t = (y - range.minY) / (range.maxY - range.minY);
+      t = 1.0 - t;
+      return clamp(t, 0, 1) * (height - 20) + 10; // padding
+    }
+
+    // pick hover index from the first enabled series (all series share timestamps per event)
+    function onMove(ev) {
+      var el = boxRef.current;
+      if (!el) return;
+      var rect = el.getBoundingClientRect();
+      var x = ev.clientX - rect.left;
+      var w = rect.width || 1;
+      var n = (decimated.length ? decimated[0].points.length : 0);
+      if (n <= 0) { setHover(null); return; }
+      var idx = Math.round(clamp(x / w, 0, 1) * (n - 1));
+      setHover(idx);
+    }
+
+    function onLeave() { setHover(null); }
+
+    var paths = [];
+    for (var s = 0; s < decimated.length; s++) {
+      var pts = decimated[s].points;
+      var p = '';
+      for (var i = 0; i < pts.length; i++) {
+        var x = xOf(i, pts.length);
+        var y = yOf(pts[i][1]);
+        p += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+      }
+      paths.push(e('path', {
+        key: decimated[s].key,
+        d: p,
+        fill: 'none',
+        stroke: decimated[s].color || 'rgba(255,255,255,0.55)',
+        strokeWidth: 2,
+        vectorEffect: 'non-scaling-stroke'
+      }));
+    }
+
+    var zeroLine = null;
+    if (showZero && range.minY < 0 && range.maxY > 0) {
+      var zy = yOf(0);
+      zeroLine = e('line', { x1: 0, y1: zy, x2: 1000, y2: zy, stroke: 'rgba(255,255,255,0.18)', strokeWidth: 1, vectorEffect: 'non-scaling-stroke' });
+    }
+
+    var yLineEls = [];
+    for (var j = 0; j < yLines.length; j++) {
+      var yl = yLines[j];
+      if (yl.y === null || yl.y === undefined || isNaN(yl.y)) continue;
+      if (yl.y < range.minY || yl.y > range.maxY) continue;
+      var ly = yOf(yl.y);
+      var col = (yl.kind === 'bad') ? 'rgba(248,81,73,0.60)' : (yl.kind === 'warn') ? 'rgba(245,159,0,0.55)' : 'rgba(255,255,255,0.22)';
+      yLineEls.push(e('line', { key: 'yl_' + j, x1: 0, y1: ly, x2: 1000, y2: ly, stroke: col, strokeWidth: 1, vectorEffect: 'non-scaling-stroke' }));
+      if (yl.label) {
+        yLineEls.push(e('text', { key: 'yl_t_' + j, x: 6, y: clamp(ly - 4, 12, height - 6), fill: col, fontSize: 11 }, yl.label));
+      }
+    }
+
+    var hoverLine = null;
+    var tooltip = null;
+    if (hover !== null && decimated.length) {
+      var n0 = decimated[0].points.length;
+      if (hover >= 0 && hover < n0) {
+        var hx = xOf(hover, n0);
+        hoverLine = e('line', { x1: hx, y1: 0, x2: hx, y2: height, stroke: 'rgba(255,255,255,0.20)', strokeWidth: 1, vectorEffect: 'non-scaling-stroke' });
+
+        var ts = decimated[0].points[hover][0];
+        var lines = [tsLabel(ts)];
+        for (var s2 = 0; s2 < decimated.length; s2++) {
+          var val = decimated[s2].points[hover][1];
+          lines.push(decimated[s2].name + ': ' + fmt(val, yUnit));
+        }
+        tooltip = e('div', { className: 'tooltip muted' }, lines.join('\\n'));
+      }
+    }
+
+    var legendItems = [];
+    for (var s3 = 0; s3 < series.length; s3++) {
+      (function(sx) {
+        legendItems.push(
+          e('label', { key: sx.key },
+            e('input', {
+              type: 'checkbox',
+              checked: !!enabled[sx.key],
+              onChange: function(ev) {
+                var next = Object.assign({}, enabled);
+                next[sx.key] = !!ev.target.checked;
+                setEnabled(next);
+              }
+            }),
+            e('span', { className: 'sw', style: { background: sx.color || 'rgba(255,255,255,0.35)' } }),
+            e('span', null, sx.name)
+          )
+        );
+      })(series[s3]);
+    }
+
+    return e('div', { className: 'card chartWrap' },
+      e('div', { className: 'chartHead' },
+        e('h2', null, title),
+        subtitle ? e('span', { className: 'muted', style: { fontSize: '12px' } }, subtitle) : null
+      ),
+      e('div', { className: 'legend' }, legendItems),
+      e('div', null,
+        e('svg', {
+          ref: boxRef,
+          className: 'svgBox',
+          viewBox: '0 0 1000 ' + String(height),
+          preserveAspectRatio: 'none',
+          onMouseMove: onMove,
+          onMouseLeave: onLeave
+        },
+          e('g', null,
+            zeroLine,
+            yLineEls,
+            paths,
+            hoverLine
+          )
+        )
+      ),
+      tooltip ? e('div', null, tooltip) : null
+    );
+  }
+
+  function EventTable(props) {
+    var events = props.events || [];
+    return e('div', { className: 'card' },
+      e('h2', null, 'Recent events (debug)'),
+      e('div', { className: 'muted', style: { fontSize: '12px', marginBottom: '8px' } }, 'Oldest → newest (limited).'),
+      e('table', null,
+        e('thead', null,
+          e('tr', null,
+            e('th', null, 'id'),
+            e('th', null, 'ts_local'),
+            e('th', null, 'feedIn'),
+            e('th', null, 'export_costs'),
+            e('th', null, 'want_pct'),
+            e('th', null, 'reason')
+          )
+        ),
+        e('tbody', null,
+          events.slice(-200).map(function(ev) {
+            var d = ev.data || {};
+            var amber = get(d, ['sources','amber'], {}) || {};
+            var dec = get(d, ['decision'], {}) || {};
+            return e('tr', { key: ev.id },
+              e('td', null, fmt(ev.id)),
+              e('td', null, fmt(ev.ts_local)),
+              e('td', null, fmt(amber.feedin_c, 'c')),
+              e('td', null, String(!!dec.export_costs)),
+              e('td', null, fmt(dec.want_pct, '%')),
+              e('td', null, String(dec.reason || '').slice(0, 120))
+            );
+          })
+        )
+      )
+    );
+  }
+
+  function Dashboard() {
+    var _a = useState([]), events = _a[0], setEvents = _a[1];
+    var _b = useState(null), latest = _b[0], setLatest = _b[1];
+    var _c = useState('booting…'), status = _c[0], setStatus = _c[1];
+    var _d = useState(null), err = _d[0], setErr = _d[1];
+    var _e = useState([]), ticker = _e[0], setTicker = _e[1];
+    var _f = useState('15m'), range = _f[0], setRange = _f[1];
+    var _g = useState(false), showDebug = _g[0], setShowDebug = _g[1];
+
+    var esRef = useRef(null);
+    var lastIdRef = useRef(0);
+    var lastKeyRef = useRef('');
+
+    function setHeaderStatus(text) {
+      setStatus(text);
+      var st = document.getElementById('status');
+      if (st) st.textContent = text;
+    }
+
+    function pushTicker(msg) {
+      var line = tsLabel(Date.now()) + '  ' + msg;
+      setTicker(function(prev) { return uniqPush(prev, line, 80); });
+    }
+
+    function importantKey(ev) {
+      var d = ev.data || {};
+      var dec = get(d, ['decision'], {}) || {};
+      var act = get(d, ['actuation'], {}) || {};
+      var gw = get(d, ['sources','goodwe'], {}) || {};
+      var alpha = get(d, ['sources','alpha'], {}) || {};
+      var amber = get(d, ['sources','amber'], {}) || {};
+      return [
+        String(!!dec.export_costs),
+        String(dec.want_pct),
+        String(dec.want_enabled),
+        String(dec.reason || ''),
+        String(!!act.write_attempted),
+        String(!!act.write_ok),
+        String(act.write_error || ''),
+        String(gw.meter_ok),
+        String(gw.wifi_pct),
+        String(alpha.ok),
+        String(alpha.soc_pct),
+        String(amber.state),
+      ].join('|');
+    }
+
+    function maybeTicker(prevEv, ev) {
+      if (!prevEv) return;
+      var pd = prevEv.data || {};
+      var d = ev.data || {};
+      var pdec = get(pd, ['decision'], {}) || {};
+      var dec = get(d, ['decision'], {}) || {};
+      var pact = get(pd, ['actuation'], {}) || {};
+      var act = get(d, ['actuation'], {}) || {};
+      var psrc = get(pd, ['sources'], {}) || {};
+      var src = get(d, ['sources'], {}) || {};
+      var pgw = get(psrc, ['goodwe'], {}) || {};
+      var gw = get(src, ['goodwe'], {}) || {};
+      var palpha = get(psrc, ['alpha'], {}) || {};
+      var alpha = get(src, ['alpha'], {}) || {};
+      var pamber = get(psrc, ['amber'], {}) || {};
+      var amber = get(src, ['amber'], {}) || {};
+
+      function changed(a,b) { return String(a) !== String(b); }
+
+      if (changed(pdec.reason, dec.reason)) pushTicker('reason → ' + String(dec.reason));
+      if (changed(pdec.want_pct, dec.want_pct)) pushTicker('want_pct → ' + fmt(dec.want_pct, '%'));
+      if (changed(pdec.export_costs, dec.export_costs)) pushTicker('export_costs → ' + String(!!dec.export_costs));
+      if (act.write_attempted && !pact.write_attempted) {
+        pushTicker('write attempt (want ' + fmt(dec.want_pct, '%') + ')');
+      }
+      if (changed(pact.write_ok, act.write_ok) && act.write_attempted) {
+        if (act.write_ok) pushTicker('write OK');
+        else pushTicker('write FAILED: ' + String(act.write_error || ''));
+      }
+      if (changed(pgw.meter_ok, gw.meter_ok)) pushTicker('GoodWe meterOK → ' + String(gw.meter_ok));
+      if (changed(pgw.wifi_pct, gw.wifi_pct)) pushTicker('GoodWe wifi → ' + fmt(gw.wifi_pct, '%'));
+      if (changed(palpha.ok, alpha.ok)) pushTicker('Alpha ok → ' + String(alpha.ok));
+      if (changed(pamber.state, amber.state)) pushTicker('Amber state → ' + String(amber.state));
+    }
+
+    function connectSSE() {
+      if (esRef.current) {
+        try { esRef.current.close(); } catch (_) {}
+        esRef.current = null;
+      }
+
+      var lastId = lastIdRef.current || 0;
+      var url = '/api/sse/events?after_id=' + String(lastId);
+      setHeaderStatus('connecting SSE (after_id=' + String(lastId) + ')');
+
+      var es;
+      try { es = new EventSource(url); }
+      catch (e2) { setErr(String(e2)); setHeaderStatus('EventSource failed'); return; }
+
+      esRef.current = es;
+
+      es.addEventListener('event', function(msg) {
+        try {
+          var ev = JSON.parse(msg.data);
+          if (ev && ev.id) lastIdRef.current = Math.max(lastIdRef.current, ev.id);
+          setLatest(ev);
+          setEvents(function(prev) {
+            var next = prev.concat([ev]);
+            if (next.length > 4000) next = next.slice(next.length - 4000);
+            return next;
+          });
+          setHeaderStatus('connected (last id: ' + String(lastIdRef.current) + ')');
+        } catch (e3) {
+          setErr('SSE parse error: ' + e3);
+        }
+      });
+
+      es.onerror = function() {
+        setHeaderStatus('SSE disconnected - retrying…');
+        try { es.close(); } catch (_) {}
+        esRef.current = null;
+        setTimeout(function() { connectSSE(); }, 2000);
+      };
+    }
+
+    useEffect(function() {
+      var cancelled = false;
+
+      function boot() {
+        setErr(null);
+        setHeaderStatus('loading latest…');
+        fetchJSON('/api/events/latest').then(function(lat) {
+          if (cancelled) return;
+          setLatest(lat);
+          lastIdRef.current = lat.id || 0;
+
+          // Fetch some history (by id window). We can't query by time, so do by id.
+          var historyN = 1200;
+          var afterId = Math.max(0, (lastIdRef.current || 0) - historyN);
+          setHeaderStatus('loading history…');
+          return fetchJSON('/api/events?after_id=' + String(afterId) + '&limit=' + String(historyN));
+        }).then(function(res) {
+          if (cancelled) return;
+          if (res && res.events) {
+            setEvents(res.events);
+            if (res.events.length) {
+              // generate initial ticker based on last item
+              var last = res.events[res.events.length - 1];
+              lastKeyRef.current = importantKey(last);
+            }
+          }
+          setHeaderStatus('api ok (latest id: ' + String(lastIdRef.current) + ') - connecting SSE…');
+          connectSSE();
+        }).catch(function(e2) {
+          if (cancelled) return;
+          setErr(String(e2));
+          setHeaderStatus('api failed');
+        });
+      }
+
+      boot();
+
+      return function() {
+        cancelled = true;
+        if (esRef.current) { try { esRef.current.close(); } catch (_) {} esRef.current = null; }
+      };
+    }, []);
+
+    // update ticker on latest change
+    useEffect(function() {
+      if (!latest) return;
+      setEvents(function(prev) {
+        if (!prev.length) return prev;
+        var prevEv = prev[prev.length - 1];
+        if (prevEv && prevEv.id === latest.id) return prev;
+        // ticker based on previous event
+        try { maybeTicker(prevEv, latest); } catch (_) {}
+        return prev;
+      });
+    }, [latest]);
+
+    var viewEvents = useMemo(function() {
+      if (!events.length) return events;
+      var lastTs = get(events[events.length - 1], ['ts_epoch_ms'], null) || get(get(events[events.length - 1], ['data'], {}), ['ts_epoch_ms'], null);
+      if (!lastTs) return events;
+
+      var durMs = 15 * 60 * 1000;
+      if (range === '1h') durMs = 60 * 60 * 1000;
+      if (range === '6h') durMs = 6 * 60 * 60 * 1000;
+      if (range === '24h') durMs = 24 * 60 * 60 * 1000;
+
+      var minTs = lastTs - durMs;
+      var out = [];
+      for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var ts = get(ev, ['ts_epoch_ms'], null);
+        if (!ts) ts = get(get(ev, ['data'], {}), ['ts_epoch_ms'], null);
+        if (ts && ts >= minTs) out.push(ev);
+      }
+      return out;
+    }, [events, range]);
+
+    // push ticker for new events list changes (by comparing keys)
+    useEffect(function() {
+      if (!events.length) return;
+      var last = events[events.length - 1];
+      var k = importantKey(last);
+      if (k !== lastKeyRef.current) {
+        // don't spam on boot, only once we have a previous key
+        if (lastKeyRef.current) {
+          try { maybeTicker(events.length > 1 ? events[events.length - 2] : null, last); } catch (_) {}
+        }
+        lastKeyRef.current = k;
+      }
+    }, [events]);
+
+    var cards = useMemo(function() {
+      var ev = latest || (events.length ? events[events.length - 1] : null);
+      if (!ev) return null;
+      var d = ev.data || {};
+      var src = get(d, ['sources'], {}) || {};
+      var amber = get(src, ['amber'], {}) || {};
+      var alpha = get(src, ['alpha'], {}) || {};
+      var gw = get(src, ['goodwe'], {}) || {};
+      var dec = get(d, ['decision'], {}) || {};
+      var act = get(d, ['actuation'], {}) || {};
+
+      var writeText = 'not attempted';
+      if (act.write_attempted) writeText = act.write_ok ? 'ok' : ('failed: ' + String(act.write_error || ''));
+      var wantLimit = fmt(dec.want_pct, '%');
+      if (dec.target_w) wantLimit = fmt(dec.want_pct, '%') + ' (~' + fmt(dec.target_w, 'W') + ')';
+
+      var amberAge = amber.age_s;
+      var alphaAge = alpha.age_s;
+      var amberPill = (amber.state === 'ok') ? 'ok' : (amber.state ? 'warn' : 'warn');
+      var alphaPill = (alpha.ok) ? 'ok' : 'warn';
+
+      return e('div', { className: 'grid' },
+        e('div', { className: 'card' },
+          e('h2', null, 'Decision'),
+          e('div', { className: 'kv' },
+            e('div', null, 'export_costs'), e('div', { className: 'muted' }, String(!!dec.export_costs)),
+            e('div', null, 'want_limit'), e('div', { className: 'muted' }, wantLimit),
+            e('div', null, 'want_enabled'), e('div', { className: 'muted' }, fmt(dec.want_enabled)),
+            e('div', null, 'reason'), e('div', { className: 'muted' }, String(dec.reason || '—')),
+            e('div', null, 'write'), e('div', { className: 'muted' }, writeText)
+          )
+        ),
+        e('div', { className: 'card' },
+          e('h2', null, 'Amber'),
+          e('div', { className: 'row' },
+            buildPill(amberPill, String(amber.state || 'unknown')),
+            e('span', { className: 'muted', style: { fontSize: '12px' } }, 'age ' + fmt(amberAge, 's'))
+          ),
+          e('div', { className: 'kv' },
+            e('div', null, 'feedIn'), e('div', { className: 'muted' }, fmt(amber.feedin_c, 'c')),
+            e('div', null, 'import'), e('div', { className: 'muted' }, fmt(amber.import_c, 'c')),
+            e('div', null, 'interval_end'), e('div', { className: 'muted' }, fmt(amber.interval_end_utc))
+          )
+        ),
+        e('div', { className: 'card' },
+          e('h2', null, 'AlphaESS'),
+          e('div', { className: 'row' },
+            buildPill(alphaPill, alpha.ok ? 'ok' : 'not ok'),
+            e('span', { className: 'muted', style: { fontSize: '12px' } }, 'age ' + fmt(alphaAge, 's'))
+          ),
+          e('div', { className: 'kv' },
+            e('div', null, 'SOC'), e('div', { className: 'muted' }, fmt(alpha.soc_pct, '%')),
+            e('div', null, 'pload'), e('div', { className: 'muted' }, fmt(alpha.pload_w, 'W')),
+            e('div', null, 'pbat'), e('div', { className: 'muted' }, fmt(alpha.pbat_w, 'W')),
+            e('div', null, 'pgrid'), e('div', { className: 'muted' }, fmt(alpha.pgrid_w, 'W'))
+          )
+        ),
+        e('div', { className: 'card' },
+          e('h2', null, 'GoodWe'),
+          e('div', { className: 'kv' },
+            e('div', null, 'gen'), e('div', { className: 'muted' }, fmt(gw.gen_w, 'W')),
+            e('div', null, 'feed'), e('div', { className: 'muted' }, fmt(gw.feed_w, 'W')),
+            e('div', null, 'temp'), e('div', { className: 'muted' }, fmt(gw.temp_c, 'C')),
+            e('div', null, 'meterOK'), e('div', { className: 'muted' }, fmt(gw.meter_ok)),
+            e('div', null, 'wifi'), e('div', { className: 'muted' }, fmt(gw.wifi_pct, '%'))
+          )
+        )
+      );
+    }, [latest, events]);
+
+    var charts = useMemo(function() {
+      if (!viewEvents.length) return null;
+
+      function ptsOf(path) {
+        var out = [];
+        for (var i = 0; i < viewEvents.length; i++) {
+          var ev = viewEvents[i];
+          var ts = get(ev, ['ts_epoch_ms'], null);
+          if (!ts) ts = get(get(ev, ['data'], {}), ['ts_epoch_ms'], null);
+          var val = get(get(ev, ['data'], {}), path, null);
+          if (val === null || val === undefined) continue;
+          out.push([ts, Number(val)]);
+        }
+        return out;
+      }
+
+      var powerGen = ptsOf(['sources','goodwe','gen_w']);
+      var powerLoad = ptsOf(['sources','alpha','pload_w']);
+      var powerGrid = ptsOf(['sources','alpha','pgrid_w']);
+      var powerBat = ptsOf(['sources','alpha','pbat_w']);
+
+      var priceImport = ptsOf(['sources','amber','import_c']);
+      var priceFeed = ptsOf(['sources','amber','feedin_c']);
+
+      var wantPct = ptsOf(['decision','want_pct']);
+      // actual readback pct (if present)
+      var actualPct = [];
+      for (var i2 = 0; i2 < viewEvents.length; i2++) {
+        var ev2 = viewEvents[i2];
+        var ts2 = get(ev2, ['ts_epoch_ms'], null);
+        if (!ts2) ts2 = get(get(ev2, ['data'], {}), ['ts_epoch_ms'], null);
+        var cur = get(get(ev2, ['data'], {}), ['sources','goodwe','current_limit'], null);
+        var pct = cur && cur.pct !== undefined ? Number(cur.pct) : null;
+        if (pct === null || pct === undefined || isNaN(pct)) continue;
+        actualPct.push([ts2, pct]);
+      }
+
+      var threshold = null;
+      try {
+        var last = viewEvents[viewEvents.length - 1];
+        threshold = get(get(last, ['data'], {}), ['decision','export_cost_threshold_c'], null);
+      } catch (_) {}
+      var yLines = [];
+      if (threshold !== null && threshold !== undefined) yLines.push({ y: Number(threshold), label: 'thresh ' + String(threshold) + 'c', kind: 'warn' });
+
+      return e('div', { style: { display: 'grid', gap: '12px' } },
+        e(LineChart, {
+          title: 'Power flows',
+          subtitle: 'GoodWe gen, Alpha load/grid/battery (' + range + ' view)',
+          yUnit: 'W',
+          showZero: true,
+          series: [
+            { key: 'gen', name: 'gen_w', color: 'rgba(88,166,255,0.85)', points: powerGen },
+            { key: 'load', name: 'pload_w', color: 'rgba(167,231,131,0.85)', points: powerLoad },
+            { key: 'grid', name: 'pgrid_w', color: 'rgba(245,159,0,0.85)', points: powerGrid },
+            { key: 'bat', name: 'pbat_w', color: 'rgba(248,81,73,0.85)', points: powerBat },
+          ]
+        }),
+        e(LineChart, {
+          title: 'Prices',
+          subtitle: 'Amber import vs feedIn (' + range + ' view)',
+          yUnit: 'c',
+          showZero: true,
+          yLines: yLines,
+          series: [
+            { key: 'import', name: 'import_c', color: 'rgba(167,231,131,0.85)', points: priceImport },
+            { key: 'feed', name: 'feedin_c', color: 'rgba(88,166,255,0.85)', points: priceFeed },
+          ]
+        }),
+        e(LineChart, {
+          title: 'Control output',
+          subtitle: 'want_pct vs GoodWe readback pct (' + range + ' view)',
+          yUnit: '%',
+          showZero: false,
+          series: [
+            { key: 'want', name: 'want_pct', color: 'rgba(245,159,0,0.85)', points: wantPct },
+            { key: 'actual', name: 'actual_pct', color: 'rgba(88,166,255,0.85)', points: actualPct },
+          ]
+        })
+      );
+    }, [viewEvents, range]);
+
+    return e('div', null,
+      err ? e('div', { className: 'err' }, e('pre', null, String(err))) : null,
+      e('div', { className: 'card' },
+        e('div', { className: 'row' },
+          e('span', { className: 'muted', style: { fontSize: '12px' } }, 'View range:'),
+          e('select', {
+            className: 'sel',
+            value: range,
+            onChange: function(ev) { setRange(ev.target.value); }
+          },
+            e('option', { value: '15m' }, '15m'),
+            e('option', { value: '1h' }, '1h'),
+            e('option', { value: '6h' }, '6h'),
+            e('option', { value: '24h' }, '24h')
+          ),
+          e('button', { className: 'btn', onClick: function() { setShowDebug(!showDebug); } }, showDebug ? 'Hide debug' : 'Show debug'),
+          e('span', { className: 'muted', style: { fontSize: '12px' } }, 'events in view: ' + String(viewEvents.length))
+        )
+      ),
+      cards,
+      charts,
+      e('div', { className: 'grid' },
+        e('div', { className: 'card' },
+          e('h2', null, 'Change ticker'),
+          e('div', { className: 'muted', style: { fontSize: '12px', marginBottom: '8px' } }, 'Only logs meaningful changes (reason, want_pct, export_costs, write ok/fail, etc).'),
+          e('div', { className: 'ticker' }, (ticker.length ? ticker.join('\\n') : '—'))
+        ),
+        e('div', { className: 'card' },
+          e('h2', null, 'Live snapshot'),
+          e('div', { className: 'muted', style: { fontSize: '12px', marginBottom: '8px' } }, 'Latest event (quick sanity check).'),
+          e('div', { className: 'tooltip muted' }, latest ? JSON.stringify({
+            id: latest.id,
+            ts_local: latest.ts_local,
+            export_costs: get(get(latest, ['data'], {}), ['decision','export_costs'], null),
+            want_pct: get(get(latest, ['data'], {}), ['decision','want_pct'], null),
+            reason: get(get(latest, ['data'], {}), ['decision','reason'], null),
+            gw_gen: get(get(latest, ['data'], {}), ['sources','goodwe','gen_w'], null),
+            alpha_pgrid: get(get(latest, ['data'], {}), ['sources','alpha','pgrid_w'], null),
+            amber_feedin: get(get(latest, ['data'], {}), ['sources','amber','feedin_c'], null),
+          }, null, 2) : '—')
+        )
+      ),
+      showDebug ? e(EventTable, { events: events }) : null
+    );
+  }
+
+  function App() {
+    return e(Dashboard);
+  }
+
+  try {
+    var rootEl = document.getElementById('root');
+    if (!rootEl) return;
+    if (ReactDOM.createRoot) {
+      ReactDOM.createRoot(rootEl).render(e(App));
+    } else {
+      ReactDOM.render(e(App), rootEl);
+    }
+  } catch (e2) {
+    var st = document.getElementById('status');
+    if (st) st.textContent = 'render failed';
+    var box = document.getElementById('bootError');
+    var pre = document.getElementById('bootErrorText');
+    if (box && pre) { box.style.display = 'block'; pre.textContent = String(e2); }
+  }
+})();"""
+
 
 
 @app.get("/js_ping")
@@ -713,6 +1543,28 @@ def index(request: Request) -> HTMLResponse:
         html_doc = html_doc.replace(f"__{k}__", _html_escape(v))
 
     return HTMLResponse(content=html_doc, headers={"cache-control": "no-store"})
+
+@app.get("/react", response_class=HTMLResponse)
+def react_index(request: Request) -> HTMLResponse:
+    # Experimental React-based UI (served without a build step; React is loaded from a CDN).
+    mode = "proxied" if UI_PROXY_API else "direct"
+    html_doc = _REACT_HTML_TEMPLATE
+    html_doc = html_doc.replace("__BUILD__", BUILD_ID)
+    html_doc = html_doc.replace("__MODE__", mode)
+    html_doc = html_doc.replace("__DB_PATH__", _html_escape(DB_PATH))
+    html_doc = html_doc.replace("__API_UPSTREAM__", _html_escape(API_UPSTREAM))
+    return HTMLResponse(content=html_doc, headers={"cache-control": "no-store"})
+
+
+@app.get("/react_app.js")
+def react_app_js() -> Response:
+    return Response(
+        content=_REACT_APP_JS,
+        media_type="application/javascript; charset=utf-8",
+        headers={"cache-control": "no-store"},
+    )
+
+
 
 
 @app.get("/app.js")
