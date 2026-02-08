@@ -1159,6 +1159,11 @@ function EventTable(props) {
     var esRef = useRef(null);
     var lastIdRef = useRef(0);
     var lastKeyRef = useRef('');
+    var idSetRef = useRef({});
+    var loadedSinceRef = useRef(null);
+    var loadingHistoryRef = useRef(false);
+    var earliestIdRef = useRef(0);
+    var cancelledRef = useRef(false);
 
     useEffect(function() {
       var t = setInterval(function() { setNowMs(Date.now()); }, 1000);
@@ -1174,6 +1179,161 @@ function EventTable(props) {
     function pushTicker(msg) {
       var line = tsLabel(Date.now()) + '  ' + msg;
       setTicker(function(prev) { return uniqPush(prev, line, 80); });
+    }
+
+    function rangeToHours(r) {
+      if (r === '24h') return 24;
+      if (r === '6h') return 6;
+      if (r === '1h') return 1;
+      return 0.25; // 15m
+    }
+
+    function evTsMs(ev) {
+      if (!ev) return null;
+      var ts = get(ev, ['ts_epoch_ms'], null);
+      if (!ts) ts = get(get(ev, ['data'], {}), ['ts_epoch_ms'], null);
+      return ts ? Number(ts) : null;
+    }
+
+    function rebuildIdSet(list) {
+      var seen = {};
+      for (var i = 0; i < list.length; i++) {
+        var id = list[i] && list[i].id ? Number(list[i].id) : 0;
+        if (id) seen[id] = true;
+      }
+      idSetRef.current = seen;
+      if (list.length) {
+        var eid = list[0] && list[0].id ? Number(list[0].id) : 0;
+        if (eid) earliestIdRef.current = eid;
+      }
+    }
+
+    function trimToCap(list, cap) {
+      if (!list || list.length <= cap) return list;
+      var out = list.slice(list.length - cap);
+      rebuildIdSet(out);
+      return out;
+    }
+
+    function mergePrependBatch(batch) {
+      if (!batch || !batch.length) return;
+      var seen = idSetRef.current || {};
+      var fresh = [];
+      for (var i = 0; i < batch.length; i++) {
+        var ev = batch[i];
+        var id = ev && ev.id ? Number(ev.id) : 0;
+        if (!id) continue;
+        if (seen[id]) continue;
+        seen[id] = true;
+        fresh.push(ev);
+      }
+      if (!fresh.length) return;
+      setEvents(function(prev) {
+        var next = fresh.concat(prev);
+        return trimToCap(next, 30000);
+      });
+      // keep cursor updated
+      var e0 = fresh[0] && fresh[0].id ? Number(fresh[0].id) : 0;
+      if (e0) earliestIdRef.current = e0;
+    }
+
+    function mergeAppendEvent(ev) {
+      var id = ev && ev.id ? Number(ev.id) : 0;
+      if (id) {
+        var seen = idSetRef.current || {};
+        if (seen[id]) return;
+        seen[id] = true;
+      }
+      setEvents(function(prev) {
+        var next = prev.concat([ev]);
+        return trimToCap(next, 30000);
+      });
+    }
+
+    function loadHistoryWindow(sinceMs, replaceAll) {
+      if (!sinceMs || !isFinite(Number(sinceMs))) return Promise.resolve();
+      if (cancelledRef.current) return Promise.resolve();
+      if (loadingHistoryRef.current) return Promise.resolve();
+
+      // If we've already loaded at least this far back, nothing to do.
+      if (!replaceAll && loadedSinceRef.current !== null) {
+        if (Number(loadedSinceRef.current) <= Number(sinceMs) + 1000) return Promise.resolve();
+      }
+
+      loadingHistoryRef.current = true;
+
+      var batchN = 2000;
+      var newestEv = null;
+      var total = 0;
+
+      if (replaceAll) {
+        idSetRef.current = {};
+        loadedSinceRef.current = null;
+        earliestIdRef.current = 0;
+        setEvents([]);
+      }
+
+      var beforeId = 0;
+      if (!replaceAll && earliestIdRef.current) beforeId = Number(earliestIdRef.current) || 0;
+      if (!beforeId) beforeId = (Number(lastIdRef.current) || 0) + 1;
+
+      function step() {
+        if (cancelledRef.current) return Promise.resolve(false);
+        var url = '/api/events?before_id=' + String(beforeId) + '&limit=' + String(batchN) + '&since_epoch_ms=' + String(Math.floor(Number(sinceMs)));
+        return fetchJSON(url).then(function(res) {
+          if (cancelledRef.current) return false;
+          var page = (res && res.events) ? res.events : [];
+          if (!page.length) return false;
+
+          if (!newestEv) newestEv = page[page.length - 1];
+
+          var newBefore = page[0] && page[0].id ? Number(page[0].id) : 0;
+          if (!newBefore || newBefore >= beforeId) return false;
+
+          if (replaceAll && total === 0) {
+            // First batch becomes our base list.
+            var seen0 = idSetRef.current || {};
+            var fresh0 = [];
+            for (var i0 = 0; i0 < page.length; i0++) {
+              var ev0 = page[i0];
+              var id0 = ev0 && ev0.id ? Number(ev0.id) : 0;
+              if (!id0) continue;
+              if (seen0[id0]) continue;
+              seen0[id0] = true;
+              fresh0.push(ev0);
+            }
+            total += fresh0.length;
+            setEvents(function(_) {
+              var next0 = trimToCap(fresh0, 30000);
+              return next0;
+            });
+            if (fresh0.length) {
+              var e00 = fresh0[0] && fresh0[0].id ? Number(fresh0[0].id) : 0;
+              if (e00) earliestIdRef.current = e00;
+            }
+          } else {
+            mergePrependBatch(page);
+            total += page.length;
+          }
+
+          beforeId = newBefore;
+          setHeaderStatus('loading history… (' + String(total) + ' rows)');
+
+          if (page.length < batchN) return false;
+          return step();
+        });
+      }
+
+      return step().then(function() {
+        if (newestEv) {
+          try { lastKeyRef.current = importantKey(newestEv); } catch (_) {}
+        }
+        loadedSinceRef.current = Number(sinceMs);
+      }).catch(function(e2) {
+        setErr(String(e2));
+      }).then(function() {
+        loadingHistoryRef.current = false;
+      });
     }
 
     function importantKey(ev) {
@@ -1255,11 +1415,7 @@ function EventTable(props) {
           var ev = JSON.parse(msg.data);
           if (ev && ev.id) lastIdRef.current = Math.max(lastIdRef.current, ev.id);
           setLatest(ev);
-          setEvents(function(prev) {
-            var next = prev.concat([ev]);
-            if (next.length > 4000) next = next.slice(next.length - 4000);
-            return next;
-          });
+          mergeAppendEvent(ev);
           setHeaderStatus('connected (last id: ' + String(lastIdRef.current) + ')');
         } catch (e3) {
           setErr('SSE parse error: ' + e3);
@@ -1273,37 +1429,29 @@ function EventTable(props) {
         setTimeout(function() { connectSSE(); }, 2000);
       };
     }
-
     useEffect(function() {
-      var cancelled = false;
+      cancelledRef.current = false;
 
       function boot() {
         setErr(null);
         setHeaderStatus('loading latest…');
         fetchJSON('/api/events/latest').then(function(lat) {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
           setLatest(lat);
           lastIdRef.current = lat.id || 0;
 
-          // Fetch some history (by id window). We can't query by time, so do by id.
-          var historyN = 1200;
-          var afterId = Math.max(0, (lastIdRef.current || 0) - historyN);
-          setHeaderStatus('loading history…');
-          return fetchJSON('/api/events?after_id=' + String(afterId) + '&limit=' + String(historyN));
-        }).then(function(res) {
-          if (cancelled) return;
-          if (res && res.events) {
-            setEvents(res.events);
-            if (res.events.length) {
-              // generate initial ticker based on last item
-              var last = res.events[res.events.length - 1];
-              lastKeyRef.current = importantKey(last);
-            }
-          }
+          var hrs = rangeToHours(range);
+          var lt = evTsMs(lat) || Date.now();
+          var sinceMs = lt - (hrs * 3600.0 * 1000.0);
+
+          setHeaderStatus('loading history (' + String(range) + ')…');
+          return loadHistoryWindow(sinceMs, true);
+        }).then(function() {
+          if (cancelledRef.current) return;
           setHeaderStatus('api ok (latest id: ' + String(lastIdRef.current) + ') - connecting SSE…');
           connectSSE();
         }).catch(function(e2) {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
           setErr(String(e2));
           setHeaderStatus('api failed');
         });
@@ -1312,10 +1460,44 @@ function EventTable(props) {
       boot();
 
       return function() {
-        cancelled = true;
+        cancelledRef.current = true;
         if (esRef.current) { try { esRef.current.close(); } catch (_) {} esRef.current = null; }
       };
     }, []);
+
+    // Track earliest id for backward paging.
+    useEffect(function() {
+      if (events && events.length) {
+        var eid = events[0] && events[0].id ? Number(events[0].id) : 0;
+        if (eid) earliestIdRef.current = eid;
+      }
+    }, [events]);
+
+    // If the user switches to a wider range (e.g. 24h), backfill older rows in batches.
+    useEffect(function() {
+      if (!latest) return;
+      if (cancelledRef.current) return;
+
+      var hrs = rangeToHours(range);
+      var lt = evTsMs(latest);
+      if (!lt) return;
+      var sinceMs = lt - (hrs * 3600.0 * 1000.0);
+
+      if (loadedSinceRef.current !== null) {
+        if (Number(loadedSinceRef.current) <= Number(sinceMs) + 1000) return;
+      }
+
+      // Don't interrupt initial boot load.
+      if (loadingHistoryRef.current) return;
+      if (!earliestIdRef.current) return;
+
+      setHeaderStatus('loading history…');
+      loadHistoryWindow(sinceMs, false).then(function() {
+        if (cancelledRef.current) return;
+        // Leave the header in a sensible state; SSE will update it on next event.
+        setHeaderStatus('connected (last id: ' + String(lastIdRef.current) + ')');
+      });
+    }, [range, latest]);
 
     // update ticker on latest change
     useEffect(function() {
