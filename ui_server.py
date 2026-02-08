@@ -463,6 +463,45 @@ _JS_TEMPLATE = """(function() {
     return String(x) + suffix;
   }
 
+  function toNum(x) {
+    var n = Number(x);
+    return (isFinite(n) ? n : null);
+  }
+
+  // Live "age" counters: age_s is captured at event time. We tick it locally between SSE updates.
+  var ageBase = {
+    amber: { baseAge: null, baseTs: null },
+    alpha: { baseAge: null, baseTs: null }
+  };
+
+  function setAgeBase(key, age_s, eventTsMs) {
+    var a = toNum(age_s);
+    var t = toNum(eventTsMs);
+    if (a === null || t === null) return;
+    ageBase[key] = { baseAge: a, baseTs: t };
+  }
+
+  function calcAgeSeconds(key) {
+    var b = ageBase[key];
+    if (!b || b.baseAge === null || b.baseTs === null) return null;
+    var now = Date.now();
+    var delta = (now - b.baseTs) / 1000.0;
+    var val = b.baseAge + delta;
+    if (!isFinite(val)) return null;
+    if (val < 0) val = 0;
+    return Math.floor(val);
+  }
+
+  function renderAgesNow() {
+    var a = calcAgeSeconds('amber');
+    if (a !== null && $('amber_age')) $('amber_age').textContent = String(a) + 's';
+    var b2 = calcAgeSeconds('alpha');
+    if (b2 !== null && $('alpha_age')) $('alpha_age').textContent = String(b2) + 's';
+  }
+
+  // Tick once per second (does nothing until bases are set).
+  setInterval(renderAgesNow, 1000);
+
     var seenIds = {};
 
   function seedSeenIds() {
@@ -557,14 +596,15 @@ function appendLog(line) {
 
     if ($('amber_feedin')) $('amber_feedin').textContent = fmt(amber.feedin_c, 'c');
     if ($('amber_import')) $('amber_import').textContent = fmt(amber.import_c, 'c');
-    if ($('amber_age')) $('amber_age').textContent = fmt(amber.age_s, 's');
+    setAgeBase('amber', amber.age_s, (d && d.ts_epoch_ms) ? d.ts_epoch_ms : (e.ts_epoch_ms || null));
     if ($('amber_end')) $('amber_end').textContent = fmt(amber.interval_end_utc);
 
     if ($('alpha_soc')) $('alpha_soc').textContent = fmt(alpha.soc_pct, '%');
     if ($('alpha_pload')) $('alpha_pload').textContent = fmt(alpha.pload_w, 'W');
     if ($('alpha_pbat')) $('alpha_pbat').textContent = fmt(alpha.pbat_w, 'W');
     if ($('alpha_pgrid')) $('alpha_pgrid').textContent = fmt(alpha.pgrid_w, 'W');
-    if ($('alpha_age')) $('alpha_age').textContent = fmt(alpha.age_s, 's');
+    setAgeBase('alpha', alpha.age_s, (d && d.ts_epoch_ms) ? d.ts_epoch_ms : (e.ts_epoch_ms || null));
+    renderAgesNow();
 
     if ($('gw_gen')) $('gw_gen').textContent = fmt(gw.gen_w, 'W');
     if ($('gw_feed')) $('gw_feed').textContent = fmt(gw.feed_w, 'W');
@@ -1112,12 +1152,18 @@ function EventTable(props) {
     var _d = useState(null), err = _d[0], setErr = _d[1];
     var _e = useState([]), ticker = _e[0], setTicker = _e[1];
     var _f = useState('15m'), range = _f[0], setRange = _f[1];
+    var _now = useState(Date.now()), nowMs = _now[0], setNowMs = _now[1];
     var _g = useState(false), showDebug = _g[0], setShowDebug = _g[1];
     var _h = useState(true), showMarkers = _h[0], setShowMarkers = _h[1];
 
     var esRef = useRef(null);
     var lastIdRef = useRef(0);
     var lastKeyRef = useRef('');
+
+    useEffect(function() {
+      var t = setInterval(function() { setNowMs(Date.now()); }, 1000);
+      return function() { try { clearInterval(t); } catch (_) {} };
+    }, []);
 
     function setHeaderStatus(text) {
       setStatus(text);
@@ -1335,8 +1381,20 @@ function EventTable(props) {
       var wantLimit = fmt(dec.want_pct, '%');
       if (dec.target_w) wantLimit = fmt(dec.want_pct, '%') + ' (~' + fmt(dec.target_w, 'W') + ')';
 
-      var amberAge = amber.age_s;
-      var alphaAge = alpha.age_s;
+      var eventTsMs = get(d, ['ts_epoch_ms'], null);
+
+      function adjAge(age, ts) {
+        var a = Number(age);
+        var t = Number(ts);
+        if (!isFinite(a) || !isFinite(t)) return age;
+        var v = a + (nowMs - t) / 1000.0;
+        if (!isFinite(v)) return age;
+        if (v < 0) v = 0;
+        return Math.floor(v);
+      }
+
+      var amberAge = adjAge(amber.age_s, eventTsMs);
+      var alphaAge = adjAge(alpha.age_s, eventTsMs);
       var amberPill = (amber.state === 'ok') ? 'ok' : (amber.state ? 'warn' : 'warn');
       var alphaPill = (alpha.ok) ? 'ok' : 'warn';
 
@@ -1387,7 +1445,7 @@ function EventTable(props) {
           )
         )
       );
-    }, [latest, events]);
+    }, [latest, events, nowMs]);
 
     var charts = useMemo(function() {
       if (!viewEvents.length) return null;
