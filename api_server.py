@@ -99,6 +99,7 @@ def latest_event() -> JSONResponse:
 def list_events(
     limit: int = Query(200, ge=1, le=20000),
     after_id: int = Query(0, ge=0),
+    before_id: Optional[int] = Query(None, ge=1),
     # Optional time-window filters (useful for UIs that show “last N hours”):
     # - hours: return events newer than now - hours
     # - since_epoch_ms: return events newer than this epoch-ms timestamp
@@ -108,6 +109,12 @@ def list_events(
     hours: Optional[float] = Query(None, ge=0),
     since_epoch_ms: Optional[int] = Query(None, ge=0),
 ) -> JSONResponse:
+    # Paging mode guardrails:
+    # - after_id: forward paging (newer)
+    # - before_id: backward paging (older)
+    if before_id is not None and int(after_id) > 0:
+        raise HTTPException(status_code=400, detail="Use only one of after_id or before_id")
+
     # Compute cutoff (epoch ms) if the caller requested a window.
     cutoff_ms: Optional[int] = None
     if since_epoch_ms is not None:
@@ -123,7 +130,26 @@ def list_events(
 
     conn = _db_connect(DB_PATH)
     try:
-        # If the client is doing incremental paging (after_id>0), preserve the old semantics.
+        # Backward paging (older rows): id < before_id
+        if before_id is not None:
+            bid = int(before_id)
+
+            if cutoff_ms is None:
+                rows = conn.execute(
+                    "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT ?",
+                    (bid, int(effective_limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM events WHERE id < ? AND ts_epoch_ms >= ? ORDER BY id DESC LIMIT ?",
+                    (bid, int(cutoff_ms), int(effective_limit)),
+                ).fetchall()
+
+            rows = list(rows)
+            rows.reverse()  # keep chronological ordering
+            return JSONResponse(content={"events": [_row_to_dict(r) for r in rows]})
+
+        # Forward paging (incremental updates): id > after_id
         if cutoff_ms is None:
             rows = conn.execute(
                 "SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?",
