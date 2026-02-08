@@ -93,62 +93,97 @@ def _get(d: Any, *path: str) -> Any:
 def _event_signature(
     event: Dict[str, Any],
     *,
+    mode: str,
     watt_step: int,
     price_step: float,
     soc_step: float,
 ) -> str:
     """Build a stable signature for de-duplicating near-identical events.
 
-    Important: this signature intentionally ignores volatile fields like timestamps and age_s.
-    """
+    Important: this signature intentionally ignores volatile fields like timestamps, pid, loop, and age_s.
 
-    # Decision fields
+    Modes:
+        - telemetry: includes quantized power/telemetry (more rows, more detail)
+        - decision: focuses on decision/limits + prices + SOC (fewer rows)
+        - decision_only: focuses on decision/limits + prices (fewest rows)
+    """
+    m = (mode or "telemetry").strip().lower()
+
+    # Core decision fields (do NOT include 'reason' because it can contain volatile numbers)
+    decision_sig: Dict[str, Any] = {
+        "export_costs": _get(event, "decision", "export_costs"),
+        "want_pct": _clamp_int(_get(event, "decision", "want_pct")),
+        "want_enabled": _clamp_int(_get(event, "decision", "want_enabled")),
+        "target_w": _clamp_int(_get(event, "decision", "target_w")),
+        "export_cost_threshold_c": _clamp_float(_get(event, "decision", "export_cost_threshold_c")),
+    }
+
+    # Actuation fields: keep these so a write attempt always gets recorded
+    act_sig: Dict[str, Any] = {
+        "write_attempted": _get(event, "actuation", "write_attempted"),
+        "write_ok": _get(event, "actuation", "write_ok"),
+        "write_error": _get(event, "actuation", "write_error"),
+    }
+
+    # Prices + interval boundary are important and change relatively infrequently
+    amber_sig: Dict[str, Any] = {
+        "state": _get(event, "sources", "amber", "state"),
+        "interval_end_utc": _get(event, "sources", "amber", "interval_end_utc"),
+        "import_c": _q(_clamp_float(_get(event, "sources", "amber", "import_c")), price_step),
+        "feedin_c": _q(_clamp_float(_get(event, "sources", "amber", "feedin_c")), price_step),
+    }
+
+    # Current inverter limit changes are meaningful, keep them
+    goodwe_limit_sig: Dict[str, Any] = {
+        "pwr_limit_fn": _get(event, "sources", "goodwe", "pwr_limit_fn"),
+        "profile": _get(event, "sources", "goodwe", "profile"),
+        "cur_enabled": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "enabled")),
+        "cur_pct": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "pct")),
+        "cur_pct10": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "pct10")),
+    }
+
+    alpha_base_sig: Dict[str, Any] = {
+        "enabled": _get(event, "sources", "alpha", "enabled"),
+        "ok": _get(event, "sources", "alpha", "ok"),
+        "sys_sn": _get(event, "sources", "alpha", "sys_sn"),
+        "batt_state": _get(event, "sources", "alpha", "batt_state"),
+    }
+
     sig: Dict[str, Any] = {
-        "decision": {
-            "export_costs": _get(event, "decision", "export_costs"),
-            "want_pct": _clamp_int(_get(event, "decision", "want_pct")),
-            "want_enabled": _clamp_int(_get(event, "decision", "want_enabled")),
-            "target_w": _clamp_int(_get(event, "decision", "target_w")),
-            "export_cost_threshold_c": _clamp_float(_get(event, "decision", "export_cost_threshold_c")),
-            "reason": _get(event, "decision", "reason"),
-        },
+        "decision": decision_sig,
+        "actuation": act_sig,
         "sources": {
-            "amber": {
-                "state": _get(event, "sources", "amber", "state"),
-                "interval_end_utc": _get(event, "sources", "amber", "interval_end_utc"),
-                "import_c": _q(_clamp_float(_get(event, "sources", "amber", "import_c")), price_step),
-                "feedin_c": _q(_clamp_float(_get(event, "sources", "amber", "feedin_c")), price_step),
-            },
-            "goodwe": {
-                "gen_w": _q(_clamp_float(_get(event, "sources", "goodwe", "gen_w")), float(max(1, watt_step))),
-                "feed_w": _q(_clamp_float(_get(event, "sources", "goodwe", "feed_w")), float(max(1, watt_step))),
-                "temp_c": _q(_clamp_float(_get(event, "sources", "goodwe", "temp_c")), 0.1),
-                "wifi_pct": _clamp_int(_get(event, "sources", "goodwe", "wifi_pct")),
-                "meter_ok": _get(event, "sources", "goodwe", "meter_ok"),
-                "pwr_limit_fn": _get(event, "sources", "goodwe", "pwr_limit_fn"),
-                "profile": _get(event, "sources", "goodwe", "profile"),
-                "cur_enabled": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "enabled")),
-                "cur_pct": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "pct")),
-            },
-            "alpha": {
-                "enabled": _get(event, "sources", "alpha", "enabled"),
-                "ok": _get(event, "sources", "alpha", "ok"),
-                "sys_sn": _get(event, "sources", "alpha", "sys_sn"),
-                "soc_pct": _q(_clamp_float(_get(event, "sources", "alpha", "soc_pct")), soc_step),
-                "batt_state": _get(event, "sources", "alpha", "batt_state"),
-                "pload_w": _q(_clamp_float(_get(event, "sources", "alpha", "pload_w")), float(max(1, watt_step))),
-                "pbat_w": _q(_clamp_float(_get(event, "sources", "alpha", "pbat_w")), float(max(1, watt_step))),
-                "pgrid_w": _q(_clamp_float(_get(event, "sources", "alpha", "pgrid_w")), float(max(1, watt_step))),
-                "charge_w": _q(_clamp_float(_get(event, "sources", "alpha", "charge_w")), float(max(1, watt_step))),
-                "discharge_w": _q(_clamp_float(_get(event, "sources", "alpha", "discharge_w")), float(max(1, watt_step))),
-            },
-        },
-        "actuation": {
-            "write_attempted": _get(event, "actuation", "write_attempted"),
-            "write_ok": _get(event, "actuation", "write_ok"),
-            "write_error": _get(event, "actuation", "write_error"),
+            "amber": amber_sig,
+            "goodwe": goodwe_limit_sig,
+            "alpha": alpha_base_sig,
         },
     }
+
+    # SOC is useful but changes relatively slowly; include for 'decision' and 'telemetry'
+    if m in ("telemetry", "decision"):
+        sig["sources"]["alpha"]["soc_pct"] = _q(_clamp_float(_get(event, "sources", "alpha", "soc_pct")), soc_step)
+
+    if m == "telemetry":
+        ws = float(max(1, watt_step))
+        sig["sources"]["goodwe"].update(
+            {
+                "gen_w": _q(_clamp_float(_get(event, "sources", "goodwe", "gen_w")), ws),
+                "feed_w": _q(_clamp_float(_get(event, "sources", "goodwe", "feed_w")), ws),
+                "pv_est_w": _q(_clamp_float(_get(event, "sources", "goodwe", "pv_est_w")), ws),
+                "temp_c": _q(_clamp_float(_get(event, "sources", "goodwe", "temp_c")), 0.2),
+                "wifi_pct": _clamp_int(_get(event, "sources", "goodwe", "wifi_pct")),
+                "meter_ok": _get(event, "sources", "goodwe", "meter_ok"),
+            }
+        )
+        sig["sources"]["alpha"].update(
+            {
+                "pload_w": _q(_clamp_float(_get(event, "sources", "alpha", "pload_w")), ws),
+                "pbat_w": _q(_clamp_float(_get(event, "sources", "alpha", "pbat_w")), ws),
+                "pgrid_w": _q(_clamp_float(_get(event, "sources", "alpha", "pgrid_w")), ws),
+                "charge_w": _q(_clamp_float(_get(event, "sources", "alpha", "charge_w")), ws),
+                "discharge_w": _q(_clamp_float(_get(event, "sources", "alpha", "discharge_w")), ws),
+            }
+        )
 
     return json.dumps(sig, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -249,6 +284,7 @@ def _extract_columns(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
 def _load_last_signature(
     conn: sqlite3.Connection,
     *,
+    mode: str,
     watt_step: int,
     price_step: float,
     soc_step: float,
@@ -265,7 +301,7 @@ def _load_last_signature(
         ev = json.loads(data_json)
         if not isinstance(ev, dict):
             return None, last_ms
-        return _event_signature(ev, watt_step=watt_step, price_step=price_step, soc_step=soc_step), last_ms
+        return _event_signature(ev, mode=mode, watt_step=watt_step, price_step=price_step, soc_step=soc_step), last_ms
     except Exception:
         return None, int(time.time() * 1000.0)
 
@@ -276,6 +312,7 @@ def _ingest_one(
     *,
     dedupe_enabled: bool,
     dedupe_force_ms: int,
+    dedupe_mode: str,
     dedupe_watt_step: int,
     dedupe_price_step: float,
     dedupe_soc_step: float,
@@ -310,6 +347,7 @@ def _ingest_one(
         if dedupe_enabled:
             sig = _event_signature(
                 event,
+                mode=dedupe_mode,
                 watt_step=int(max(1, dedupe_watt_step)),
                 price_step=float(dedupe_price_step),
                 soc_step=float(dedupe_soc_step),
@@ -352,6 +390,7 @@ def _ingest_one(
             try:
                 dedupe_last_sig = _event_signature(
                     event,
+                    mode=dedupe_mode,
                     watt_step=int(max(1, dedupe_watt_step)),
                     price_step=float(dedupe_price_step),
                     soc_step=float(dedupe_soc_step),
@@ -563,6 +602,7 @@ def main() -> int:
 
     dedupe_enabled = _env_bool("INGEST_DEDUP_ENABLED", False)
     dedupe_force_sec = _env_float("INGEST_DEDUP_FORCE_SEC", 30.0)
+    dedupe_mode = _env("INGEST_DEDUP_MODE", "telemetry")
     dedupe_watt_step = _env_int("INGEST_DEDUP_WATT_STEP", 10)
     dedupe_price_step = _env_float("INGEST_DEDUP_PRICE_STEP", 0.001)
     dedupe_soc_step = _env_float("INGEST_DEDUP_SOC_STEP", 0.1)
@@ -572,6 +612,7 @@ def main() -> int:
     if dedupe_enabled:
         dedupe_last_sig, dedupe_last_insert_ms = _load_last_signature(
             conn,
+            mode=dedupe_mode,
             watt_step=dedupe_watt_step,
             price_step=dedupe_price_step,
             soc_step=dedupe_soc_step,
@@ -579,11 +620,19 @@ def main() -> int:
 
     last_retention = time.monotonic()
 
+    # Periodic stats to confirm de-duplication effectiveness
+    stats_every = _env_float("INGEST_STATS_EVERY_SEC", 60.0)
+    stats_scanned = 0
+    stats_inserted = 0
+    stats_skipped = 0
+    stats_bad = 0
+    last_stats = time.monotonic()
+
 
     LOG.info(
         f"[ingest] export_dir={export_dir} processed_dir={processed_dir} db={db_path} "
         f"delete={bool(args.delete)} ckpt={ckpt_every}s truncate_mb={truncate_mb} "
-        f"dedupe={'on' if dedupe_enabled else 'off'} force_sec={dedupe_force_sec} "
+        f"dedupe={'on' if dedupe_enabled else 'off'} force_sec={dedupe_force_sec} mode={dedupe_mode} "
         f"watt_step={dedupe_watt_step} price_step={dedupe_price_step} soc_step={dedupe_soc_step} "
         f"retention={'on' if retention_enabled else 'off'} full_h={retention_full_hours} "
         f"del_d={retention_delete_after_days} ret_every={retention_every_sec}s slim_batch={retention_slim_batch} "
@@ -620,11 +669,13 @@ def main() -> int:
                 continue
 
             for path in paths:
+                stats_scanned += 1
                 ok, dedupe_last_sig, dedupe_last_insert_ms, _inserted = _ingest_one(
                     conn,
                     path,
                     dedupe_enabled=dedupe_enabled,
                     dedupe_force_ms=int(max(0.0, float(dedupe_force_sec)) * 1000.0),
+                    dedupe_mode=dedupe_mode,
                     dedupe_watt_step=dedupe_watt_step,
                     dedupe_price_step=dedupe_price_step,
                     dedupe_soc_step=dedupe_soc_step,
@@ -632,6 +683,10 @@ def main() -> int:
                     dedupe_last_insert_ms=int(dedupe_last_insert_ms),
                 )
                 if ok:
+                    if _inserted:
+                        stats_inserted += 1
+                    else:
+                        stats_skipped += 1
                     if args.delete:
                         try:
                             path.unlink(missing_ok=True)
@@ -647,6 +702,7 @@ def main() -> int:
                             except Exception:
                                 pass
                 else:
+                    stats_bad += 1
                     # If it's malformed, quarantine it so we don't spin on it.
                     try:
                         _move_processed(path, processed_dir / "bad")
@@ -673,6 +729,20 @@ def main() -> int:
                 except Exception:
                     pass
                 last_retention = now
+
+            if stats_every > 0 and (now - last_stats) >= stats_every:
+                try:
+                    qlen = sum(1 for _ in export_dir.glob("*.json"))
+                except Exception:
+                    qlen = -1
+                LOG.info(
+                    f"[ingest] stats scanned={stats_scanned} inserted={stats_inserted} skipped={stats_skipped} bad={stats_bad} qlen={qlen}"
+                )
+                stats_scanned = 0
+                stats_inserted = 0
+                stats_skipped = 0
+                stats_bad = 0
+                last_stats = now
 
             time.sleep(max(0.1, float(args.poll)))
 

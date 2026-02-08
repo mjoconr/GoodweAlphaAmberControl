@@ -250,7 +250,12 @@ Use:
 
   * `INGEST_DEDUP_ENABLED=1`
   * `INGEST_DEDUP_FORCE_SEC=30` (keep a heartbeat event for the UI)
-  * Tune sensitivity with `INGEST_DEDUP_WATT_STEP`, `INGEST_DEDUP_PRICE_STEP`, `INGEST_DEDUP_SOC_STEP`
+  * `INGEST_DEDUP_MODE=telemetry|decision|decision_only`
+    * `telemetry` keeps power readings (more rows, more detail)
+    * `decision` stores mostly decision/limits + prices + SOC (fewer rows; recommended)
+    * `decision_only` stores mostly decision/limits + prices (fewest rows)
+  * Tune telemetry sensitivity with `INGEST_DEDUP_WATT_STEP`, `INGEST_DEDUP_PRICE_STEP`, `INGEST_DEDUP_SOC_STEP`
+  * `INGEST_STATS_EVERY_SEC=60` emits a periodic stats line (`inserted` vs `skipped`) to confirm dedupe is working
 
 Note: SQLite files usually do **not** shrink after deletes/updates until you run `VACUUM`:
 
