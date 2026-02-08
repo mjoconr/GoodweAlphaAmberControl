@@ -229,6 +229,36 @@ This repository can run as four small processes:
 3) **api_server.py** exposes a small HTTP API + **SSE** stream backed by SQLite.
 4) **ui_server.py** serves a simple live web UI that connects to the API.
 
+### Controlling SQLite size
+
+There are two levers:
+
+1) **Raw payload inclusion** (in `control.py`)
+
+Large upstream payloads (Amber raw price/usage arrays, Alpha raw response) can explode the DB size if stored on every loop.
+
+Use:
+
+* `EVENT_EXPORT_AMBER_RAW_MODE=on_change` (default)
+* `EVENT_EXPORT_ALPHA_RAW_MODE=on_change` (default)
+
+2) **Retention / de-duplication** (in `ingest_to_sqlite.py`)
+
+* Keep full events for 48h, then slim older rows: `INGEST_RETENTION_FULL_HOURS=48`
+* Optionally delete very old rows: `INGEST_RETENTION_DELETE_AFTER_DAYS=30`
+* Optionally reduce the number of stored rows by skipping near-identical consecutive events:
+
+  * `INGEST_DEDUP_ENABLED=1`
+  * `INGEST_DEDUP_FORCE_SEC=30` (keep a heartbeat event for the UI)
+  * Tune sensitivity with `INGEST_DEDUP_WATT_STEP`, `INGEST_DEDUP_PRICE_STEP`, `INGEST_DEDUP_SOC_STEP`
+
+Note: SQLite files usually do **not** shrink after deletes/updates until you run `VACUUM`:
+
+```bash
+set -a; source .env; set +a
+python3 ingest_to_sqlite.py --vacuum
+```
+
 ### Run without systemd (dev/test)
 
 In one terminal:

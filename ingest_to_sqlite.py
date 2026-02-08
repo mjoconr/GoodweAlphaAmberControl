@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import logging
 
@@ -49,6 +49,108 @@ def _env_bool(name: str, default: bool) -> bool:
 # Logging
 DEBUG = _env_bool("DEBUG", False)
 LOG = setup_logging("ingest", debug_default=DEBUG)
+
+
+def _clamp_float(v: Optional[float]) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _clamp_int(v: Any) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        return int(v)
+    except Exception:
+        return None
+
+
+def _q(v: Optional[float], step: float) -> Optional[float]:
+    """Quantize a float to the nearest step (for change-detection)."""
+    if v is None:
+        return None
+    try:
+        if step <= 0:
+            return float(v)
+        return round(float(v) / step) * step
+    except Exception:
+        return None
+
+
+def _get(d: Any, *path: str) -> Any:
+    cur = d
+    for k in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(k)
+    return cur
+
+
+def _event_signature(
+    event: Dict[str, Any],
+    *,
+    watt_step: int,
+    price_step: float,
+    soc_step: float,
+) -> str:
+    """Build a stable signature for de-duplicating near-identical events.
+
+    Important: this signature intentionally ignores volatile fields like timestamps and age_s.
+    """
+
+    # Decision fields
+    sig: Dict[str, Any] = {
+        "decision": {
+            "export_costs": _get(event, "decision", "export_costs"),
+            "want_pct": _clamp_int(_get(event, "decision", "want_pct")),
+            "want_enabled": _clamp_int(_get(event, "decision", "want_enabled")),
+            "target_w": _clamp_int(_get(event, "decision", "target_w")),
+            "export_cost_threshold_c": _clamp_float(_get(event, "decision", "export_cost_threshold_c")),
+            "reason": _get(event, "decision", "reason"),
+        },
+        "sources": {
+            "amber": {
+                "state": _get(event, "sources", "amber", "state"),
+                "interval_end_utc": _get(event, "sources", "amber", "interval_end_utc"),
+                "import_c": _q(_clamp_float(_get(event, "sources", "amber", "import_c")), price_step),
+                "feedin_c": _q(_clamp_float(_get(event, "sources", "amber", "feedin_c")), price_step),
+            },
+            "goodwe": {
+                "gen_w": _q(_clamp_float(_get(event, "sources", "goodwe", "gen_w")), float(max(1, watt_step))),
+                "feed_w": _q(_clamp_float(_get(event, "sources", "goodwe", "feed_w")), float(max(1, watt_step))),
+                "temp_c": _q(_clamp_float(_get(event, "sources", "goodwe", "temp_c")), 0.1),
+                "wifi_pct": _clamp_int(_get(event, "sources", "goodwe", "wifi_pct")),
+                "meter_ok": _get(event, "sources", "goodwe", "meter_ok"),
+                "pwr_limit_fn": _get(event, "sources", "goodwe", "pwr_limit_fn"),
+                "profile": _get(event, "sources", "goodwe", "profile"),
+                "cur_enabled": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "enabled")),
+                "cur_pct": _clamp_int(_get(event, "sources", "goodwe", "current_limit", "pct")),
+            },
+            "alpha": {
+                "enabled": _get(event, "sources", "alpha", "enabled"),
+                "ok": _get(event, "sources", "alpha", "ok"),
+                "sys_sn": _get(event, "sources", "alpha", "sys_sn"),
+                "soc_pct": _q(_clamp_float(_get(event, "sources", "alpha", "soc_pct")), soc_step),
+                "batt_state": _get(event, "sources", "alpha", "batt_state"),
+                "pload_w": _q(_clamp_float(_get(event, "sources", "alpha", "pload_w")), float(max(1, watt_step))),
+                "pbat_w": _q(_clamp_float(_get(event, "sources", "alpha", "pbat_w")), float(max(1, watt_step))),
+                "pgrid_w": _q(_clamp_float(_get(event, "sources", "alpha", "pgrid_w")), float(max(1, watt_step))),
+                "charge_w": _q(_clamp_float(_get(event, "sources", "alpha", "charge_w")), float(max(1, watt_step))),
+                "discharge_w": _q(_clamp_float(_get(event, "sources", "alpha", "discharge_w")), float(max(1, watt_step))),
+            },
+        },
+        "actuation": {
+            "write_attempted": _get(event, "actuation", "write_attempted"),
+            "write_ok": _get(event, "actuation", "write_ok"),
+            "write_error": _get(event, "actuation", "write_error"),
+        },
+    }
+
+    return json.dumps(sig, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 
@@ -144,17 +246,81 @@ def _extract_columns(event: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
     return cols, payload
 
 
-def _ingest_one(conn: sqlite3.Connection, json_path: Path) -> bool:
-    """Return True if the file was valid and handled (inserted or already present)."""
+def _load_last_signature(
+    conn: sqlite3.Connection,
+    *,
+    watt_step: int,
+    price_step: float,
+    soc_step: float,
+) -> Tuple[Optional[str], int]:
+    """Prime the de-duplication state from the last row in the DB."""
+    try:
+        row = conn.execute(
+            "SELECT data_json, ts_epoch_ms FROM events ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None, int(time.time() * 1000.0)
+        last_ms = int(row["ts_epoch_ms"]) if row["ts_epoch_ms"] is not None else int(time.time() * 1000.0)
+        data_json = row["data_json"]
+        ev = json.loads(data_json)
+        if not isinstance(ev, dict):
+            return None, last_ms
+        return _event_signature(ev, watt_step=watt_step, price_step=price_step, soc_step=soc_step), last_ms
+    except Exception:
+        return None, int(time.time() * 1000.0)
+
+
+def _ingest_one(
+    conn: sqlite3.Connection,
+    json_path: Path,
+    *,
+    dedupe_enabled: bool,
+    dedupe_force_ms: int,
+    dedupe_watt_step: int,
+    dedupe_price_step: float,
+    dedupe_soc_step: float,
+    dedupe_last_sig: Optional[str],
+    dedupe_last_insert_ms: int,
+) -> Tuple[bool, Optional[str], int, bool]:
+    """Ingest one JSON file.
+
+    Returns:
+        (handled_ok, new_last_sig, new_last_insert_ms, inserted)
+    """
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             event = json.load(f)
         if not isinstance(event, dict):
-            return False
+            return False, dedupe_last_sig, dedupe_last_insert_ms, False
 
         cols, payload = _extract_columns(event)
         if not cols.get("event_id"):
-            return False
+            return False, dedupe_last_sig, dedupe_last_insert_ms, False
+
+        # Optional de-duplication: skip near-identical events to reduce DB growth.
+        event_ms = cols.get("ts_epoch_ms")
+        if event_ms is None:
+            event_ms = int(time.time() * 1000.0)
+        else:
+            try:
+                event_ms = int(event_ms)
+            except Exception:
+                event_ms = int(time.time() * 1000.0)
+
+        if dedupe_enabled:
+            sig = _event_signature(
+                event,
+                watt_step=int(max(1, dedupe_watt_step)),
+                price_step=float(dedupe_price_step),
+                soc_step=float(dedupe_soc_step),
+            )
+            if sig == dedupe_last_sig and (int(event_ms) - int(dedupe_last_insert_ms)) < int(dedupe_force_ms):
+                if DEBUG:
+                    LOG.debug(
+                        f"[ingest] dedupe skip id={cols.get('event_id')} loop={cols.get('loop')} "
+                        f"delta_ms={int(event_ms) - int(dedupe_last_insert_ms)}"
+                    )
+                return True, dedupe_last_sig, int(dedupe_last_insert_ms), False
 
         # Treat duplicates as success so we still move/delete the file.
         conn.execute(
@@ -181,9 +347,21 @@ def _ingest_one(conn: sqlite3.Connection, json_path: Path) -> bool:
             ),
         )
         conn.commit()
-        return True
+        # Update de-dupe state after a successful insert.
+        if dedupe_enabled:
+            try:
+                dedupe_last_sig = _event_signature(
+                    event,
+                    watt_step=int(max(1, dedupe_watt_step)),
+                    price_step=float(dedupe_price_step),
+                    soc_step=float(dedupe_soc_step),
+                )
+            except Exception:
+                pass
+            dedupe_last_insert_ms = int(event_ms)
+        return True, dedupe_last_sig, int(dedupe_last_insert_ms), True
     except Exception:
-        return False
+        return False, dedupe_last_sig, dedupe_last_insert_ms, False
 
 
 def _move_processed(src: Path, processed_dir: Path) -> None:
@@ -383,12 +561,30 @@ def main() -> int:
     retention_slim_batch = _env_int("INGEST_RETENTION_SLIM_BATCH", 500)
     processed_retention_days = _env_int("INGEST_PROCESSED_RETENTION_DAYS", 0)
 
+    dedupe_enabled = _env_bool("INGEST_DEDUP_ENABLED", False)
+    dedupe_force_sec = _env_float("INGEST_DEDUP_FORCE_SEC", 30.0)
+    dedupe_watt_step = _env_int("INGEST_DEDUP_WATT_STEP", 10)
+    dedupe_price_step = _env_float("INGEST_DEDUP_PRICE_STEP", 0.001)
+    dedupe_soc_step = _env_float("INGEST_DEDUP_SOC_STEP", 0.1)
+
+    dedupe_last_sig: Optional[str] = None
+    dedupe_last_insert_ms: int = int(time.time() * 1000.0)
+    if dedupe_enabled:
+        dedupe_last_sig, dedupe_last_insert_ms = _load_last_signature(
+            conn,
+            watt_step=dedupe_watt_step,
+            price_step=dedupe_price_step,
+            soc_step=dedupe_soc_step,
+        )
+
     last_retention = time.monotonic()
 
 
     LOG.info(
         f"[ingest] export_dir={export_dir} processed_dir={processed_dir} db={db_path} "
         f"delete={bool(args.delete)} ckpt={ckpt_every}s truncate_mb={truncate_mb} "
+        f"dedupe={'on' if dedupe_enabled else 'off'} force_sec={dedupe_force_sec} "
+        f"watt_step={dedupe_watt_step} price_step={dedupe_price_step} soc_step={dedupe_soc_step} "
         f"retention={'on' if retention_enabled else 'off'} full_h={retention_full_hours} "
         f"del_d={retention_delete_after_days} ret_every={retention_every_sec}s slim_batch={retention_slim_batch} "
         f"proc_ret_d={processed_retention_days}"
@@ -424,7 +620,17 @@ def main() -> int:
                 continue
 
             for path in paths:
-                ok = _ingest_one(conn, path)
+                ok, dedupe_last_sig, dedupe_last_insert_ms, _inserted = _ingest_one(
+                    conn,
+                    path,
+                    dedupe_enabled=dedupe_enabled,
+                    dedupe_force_ms=int(max(0.0, float(dedupe_force_sec)) * 1000.0),
+                    dedupe_watt_step=dedupe_watt_step,
+                    dedupe_price_step=dedupe_price_step,
+                    dedupe_soc_step=dedupe_soc_step,
+                    dedupe_last_sig=dedupe_last_sig,
+                    dedupe_last_insert_ms=int(dedupe_last_insert_ms),
+                )
                 if ok:
                     if args.delete:
                         try:
