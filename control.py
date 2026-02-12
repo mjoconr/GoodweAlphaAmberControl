@@ -294,6 +294,8 @@ ALPHAESS_MAX_STALE_SEC = _env_int("ALPHAESS_MAX_STALE_SEC", 30)
 # Grid feedback tuning
 ALPHAESS_GRID_FEEDBACK_GAIN = _env_float("ALPHAESS_GRID_FEEDBACK_GAIN", 1.0)
 ALPHAESS_GRID_IMPORT_BIAS_W = _env_int("ALPHAESS_GRID_IMPORT_BIAS_W", 50)
+ALPHAESS_GRID_IMPORT_BIAS_W_WHEN_NOT_FULL = _env_int("ALPHAESS_GRID_IMPORT_BIAS_W_WHEN_NOT_FULL", 0)
+
 
 # Battery considered "full" at/above this SOC percentage.
 # Many systems only report SOC as an integer, so use 99.5 by default to treat 100% as full.
@@ -310,7 +312,7 @@ ALPHAESS_FULL_SOC_PCT = _env_float("ALPHAESS_FULL_SOC_PCT", 99.5)
 # deliberately leave headroom for the battery to *start* charging (self-consumption mode).
 # If SOC is below this threshold, we assume the battery can absorb up to AUTO_CHARGE_W.
 # Set AUTO_CHARGE_W=0 to disable this behaviour.
-ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT = _env_float("ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT", 90.0)
+ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT = _env_float("ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT", ALPHAESS_FULL_SOC_PCT)
 ALPHAESS_AUTO_CHARGE_W = _env_int("ALPHAESS_AUTO_CHARGE_W", 1500)
 ALPHAESS_AUTO_CHARGE_MAX_W = _env_int("ALPHAESS_AUTO_CHARGE_MAX_W", 3000)
 
@@ -1694,7 +1696,9 @@ def main() -> int:
         f"[start] alphaess_idle_threshold={ALPHAESS_PBAT_IDLE_THRESHOLD_W}W "
         f"auto_charge_below_soc={ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT}% "
         f"auto_charge_w={ALPHAESS_AUTO_CHARGE_W}W auto_charge_max_w={ALPHAESS_AUTO_CHARGE_MAX_W}W "
-        f"full_soc={ALPHAESS_FULL_SOC_PCT}%"
+        f"full_soc={ALPHAESS_FULL_SOC_PCT}% "
+        f"grid_import_bias_full={ALPHAESS_GRID_IMPORT_BIAS_W}W "
+        f"grid_import_bias_not_full={ALPHAESS_GRID_IMPORT_BIAS_W_WHEN_NOT_FULL}W"
     )
 
     amber = AmberClient(AMBER_SITE_ID, AMBER_API_KEY)
@@ -1899,6 +1903,17 @@ def main() -> int:
                         measured_charge_w = int(alpha_snap.charge_w or 0)
                         desired_charge_w = int(measured_charge_w)
 
+                        # Determine whether the battery is effectively full.
+                        # When the battery is not full, biasing to import can cause SmartShift to discharge
+                        # to cancel that import, which then prevents the battery from ever topping up.
+                        soc_f: Optional[float] = None
+                        if alpha_snap.soc_pct is not None:
+                            try:
+                                soc_f = float(alpha_snap.soc_pct)
+                            except Exception:
+                                soc_f = None
+                        battery_full = (soc_f is not None) and (soc_f >= float(ALPHAESS_FULL_SOC_PCT))
+
                         # Optional: if SOC is low and the battery appears idle, leave headroom
                         # for it to begin charging (prevents a "never starts charging" equilibrium).
                         auto_add_w = 0
@@ -1907,11 +1922,7 @@ def main() -> int:
                             and ALPHAESS_AUTO_CHARGE_W > 0
                             and ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT > 0
                         ):
-                            try:
-                                soc2 = float(alpha_snap.soc_pct)
-                            except Exception:
-                                soc2 = None
-                            if soc2 is not None and soc2 < float(ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT):
+                            if soc_f is not None and soc_f < float(ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT):
                                 cap = int(max(0, min(int(ALPHAESS_AUTO_CHARGE_W), int(ALPHAESS_AUTO_CHARGE_MAX_W))))
                                 if cap > desired_charge_w:
                                     auto_add_w = int(cap - desired_charge_w)
@@ -1925,13 +1936,16 @@ def main() -> int:
                             target_w_f += ALPHAESS_GRID_FEEDBACK_GAIN * float(alpha_snap.grid_import_w)
                             target_w_f -= ALPHAESS_GRID_FEEDBACK_GAIN * float(alpha_snap.grid_export_w)
 
-                            # Bias slightly toward import to avoid small accidental export.
-                            target_w_f -= float(ALPHAESS_GRID_IMPORT_BIAS_W)
+                            # Bias toward importing to avoid tiny accidental exports.
+                            # Apply the bias only when the battery is full; otherwise it can encourage
+                            # SmartShift to discharge to cancel the import we intentionally create.
+                            bias_w = int(ALPHAESS_GRID_IMPORT_BIAS_W) if battery_full else int(ALPHAESS_GRID_IMPORT_BIAS_W_WHEN_NOT_FULL)
+                            target_w_f -= float(bias_w)
 
                         target_w = int(round(max(0.0, min(float(GOODWE_RATED_W), target_w_f))))
                         target_reason = f"pload={pload_w}W charge={desired_charge_w}W" + (
                             f"(auto+{auto_add_w}W)" if auto_add_w else ""
-                        )
+                        ) + (f" full={battery_full} bias={bias_w}W" if alpha_snap.pgrid_w is not None else f" full={battery_full}")
                 else:
                     target_w = int(GOODWE_RATED_W)
                     target_reason = "export_allowed"

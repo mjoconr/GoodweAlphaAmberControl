@@ -89,13 +89,15 @@ Every loop, it:
 When `export_costs=True` (i.e. `feedIn < EXPORT_COST_THRESHOLD_C`), the controller aims to keep **grid export near zero** by limiting the GW5000 to roughly:
 
 * **target PV** ≈ `pload + battery_charge` (then trimmed using `pGrid` feedback)
-* a small **import bias** (`ALPHAESS_GRID_IMPORT_BIAS_W`) is applied to avoid tiny accidental exports
+* a small **import bias** is applied to avoid tiny accidental exports *only when the battery is full* (`ALPHAESS_GRID_IMPORT_BIAS_W`).
+* when the battery is not full, bias defaults to 0 (`ALPHAESS_GRID_IMPORT_BIAS_W_WHEN_NOT_FULL`) to avoid encouraging battery discharge.
 
 This naturally does what you want near full battery: as the battery charge tapers down, `battery_charge` drops, so the target drops and the GW5000 backs off automatically — no extra “near‑full SOC” threshold is required.
 
-Optional “auto charge headroom” (helps charging start when SOC is low):
+Optional “auto charge headroom” (helps charging start / continue when the battery isn’t full):
 
 * If `SOC < ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT` and `ALPHAESS_AUTO_CHARGE_W > 0`, the controller will assume the battery can absorb up to `ALPHAESS_AUTO_CHARGE_W` (clamped by `ALPHAESS_AUTO_CHARGE_MAX_W`) and will leave PV headroom accordingly.
+  * Default `ALPHAESS_AUTO_CHARGE_BELOW_SOC_PCT` tracks `ALPHAESS_FULL_SOC_PCT` so this behaviour continues up until “full”.
 * Set `ALPHAESS_AUTO_CHARGE_W=0` to disable this behaviour.
 
 ## When export does NOT cost money
