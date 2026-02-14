@@ -5,3 +5,6 @@ __pycache__
 # Logs
 logs/
 *.log
+data/
+export/
+ui_static/
