@@ -254,7 +254,7 @@ Test carefully, start with conservative settings, and monitor logs when making c
 
 ---
 
-## Pattern 2 stack (JSON export ➜ SQLite ➜ API+SSE ➜ UI)
+## Stack (JSON export ➜ SQLite ➜ API+SSE ➜ UI)
 
 This repository can run as four small processes:
 
